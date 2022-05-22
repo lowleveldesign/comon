@@ -1,0 +1,74 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ninja-x86",
+      "displayName": "Ninja (x86)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": {
+        "value": "x86",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        },
+        "VCPKG_TARGET_TRIPLET": {
+          "value": "x86-windows-static"
+        }
+      }
+    },
+    {
+      "name": "ninja-x64",
+      "displayName": "Ninja (x64)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        },
+        "VCPKG_TARGET_TRIPLET": {
+          "value": "x64-windows-static"
+        }
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ninja-x86-debug",
+      "configurePreset": "ninja-x86",
+      "displayName": "Debug (x86)",
+      "configuration": "Debug"
+    },
+    {
+      "name": "ninja-x86-release",
+      "configurePreset": "ninja-x86",
+      "displayName": "Release (x86)",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ninja-x64-debug",
+      "configurePreset": "ninja-x64",
+      "displayName": "Debug (x64)",
+      "configuration": "Debug"
+    },
+    {
+      "name": "ninja-x64-release",
+      "configurePreset": "ninja-x64",
+      "displayName": "Release (x64)",
+      "configuration": "RelWithDebInfo"
+    }
+  ]
+}
