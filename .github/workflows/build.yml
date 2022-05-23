@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        arch:
+          - x64
+          - x86
+    
+    steps:
+    - uses: actions/checkout@main
+      with:
+        fetch-depth: 1
+        submodules: true
+
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.arch }}
+
+    - run: |
+        cmake --preset=ninja-${{ matrix.arch }}
+        cmake --build --preset=ninja-${{ matrix.arch }}-release
+
+    - run: cpack
+      working-directory: ./build/ninja-${{ matrix.arch }}
