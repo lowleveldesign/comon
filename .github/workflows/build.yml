@@ -31,3 +31,8 @@ jobs:
 
     - run: cpack
       working-directory: ./build/ninja-${{ matrix.arch }}
+
+    - uses: actions/upload-artifact@main
+      with:
+        name: comon-${{ matrix.arch }}
+        path: build/ninja-${{ matrix.arch }}/comon-*.zip
