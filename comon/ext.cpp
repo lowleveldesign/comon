@@ -82,18 +82,18 @@ extern "C" HRESULT CALLBACK cometa(IDebugClient *dbgclient, PCSTR args) {
                 } else {
                     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"No information about the interface methods :(\n");
                 }
-
-                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nRegistered VTables for IID:\n");
-                for (auto &[module_name, clsid, is_64bit, vtbl] : cometa.find_vtables_by_iid(iid)) {
-                    auto clsid_name{cometa.resolve_class_name(clsid)};
-                    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                                           std::format(L"- Module: {} ({}), CLSID: {:b} ({}), VTable offset: {:#x}\n", module_name,
-                                                       is_64bit ? L"64-bit" : L"32-bit", clsid, clsid_name ? *clsid_name : L"N/A", vtbl)
-                                               .c_str());
-                }
             } else {
                 dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
                                        std::format(L"Could not find any COM type with IID: {:b} in the metadata.\n", iid).c_str());
+            }
+
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nRegistered VTables for IID:\n");
+            for (auto &[module_name, clsid, is_64bit, vtbl] : cometa.find_vtables_by_iid(iid)) {
+                auto clsid_name{cometa.resolve_class_name(clsid)};
+                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                       std::format(L"- Module: {} ({}), CLSID: {:b} ({}), VTable offset: {:#x}\n", module_name,
+                                                   is_64bit ? L"64-bit" : L"32-bit", clsid, clsid_name ? *clsid_name : L"N/A", vtbl)
+                                           .c_str());
             }
             return S_OK;
         } else {
@@ -108,19 +108,19 @@ extern "C" HRESULT CALLBACK cometa(IDebugClient *dbgclient, PCSTR args) {
         if (CLSID clsid{}; SUCCEEDED(try_parse_guid(widen(vargs[1]), clsid))) {
             if (auto coclass{cometa.resolve_class(clsid)}; coclass) {
                 dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL,
-                                                 std::format(L"Found: {:b} ({})\n\n", clsid, coclass->name).c_str());
-
-                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"Registered VTables for CLSID:\n");
-                for (auto &[module_name, iid, is_64bit, vtbl] : cometa.find_vtables_by_clsid(clsid)) {
-                    auto iid_name{cometa.resolve_type_name(iid)};
-                    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                                           std::format(L"- module: {} ({}), IID: {:b} ({}), VTable offset: {:#x}\n", module_name,
-                                                       is_64bit ? L"64-bit" : L"32-bit", iid, iid_name ? *iid_name : L"N/A", vtbl)
-                                               .c_str());
-                }
+                                                 std::format(L"Found: {:b} ({})\n", clsid, coclass->name).c_str());
             } else {
                 dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
                                        std::format(L"Could not find any COM class with CLSID: {:b} in the metadata.\n", clsid).c_str());
+            }
+
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nRegistered VTables for CLSID:\n");
+            for (auto &[module_name, iid, is_64bit, vtbl] : cometa.find_vtables_by_clsid(clsid)) {
+                auto iid_name{cometa.resolve_type_name(iid)};
+                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                       std::format(L"- module: {} ({}), IID: {:b} ({}), VTable offset: {:#x}\n", module_name,
+                                                   is_64bit ? L"64-bit" : L"32-bit", iid, iid_name ? *iid_name : L"N/A", vtbl)
+                                           .c_str());
             }
             return S_OK;
         } else {
