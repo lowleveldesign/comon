@@ -26,11 +26,11 @@ jobs:
         arch: ${{ matrix.arch }}
 
     - run: |
-        cmake --preset=ninja-${{ matrix.arch }}
+        cmake --preset=ninja-${{ matrix.arch }}-release
         cmake --build --preset=ninja-${{ matrix.arch }}-release
 
     - run: cpack
-      working-directory: ./build/ninja-${{ matrix.arch }}
+      working-directory: ./build/ninja-${{ matrix.arch }}-release
 
     - uses: actions/upload-artifact@main
       with:

@@ -21,10 +21,7 @@
 #include <format>
 #include <ranges>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
-#include <variant>
 
 #include <DbgEng.h>
 #include <Windows.h>
@@ -97,7 +94,7 @@ comonitor::comonitor(IDebugClient5 *dbgclient, std::shared_ptr<cometa> cometa, s
         }
     }
 
-    for (const auto &m : {L"combase!CoCreateInstance", L"combase!CoGetClassObject"}) {
+    for (const auto &m : {L"combase!CoCreateInstance", L"combase!CoGetClassObject", L"combase!CoGetInstanceFromFile"}) {
         if (auto hr{set_breakpoint(function_breakpoint{m})}; FAILED(hr)) {
             _logger.log_error(std::format(L"Failed to set a breakpoint on method '{}'", m), hr);
         }
@@ -112,38 +109,6 @@ comonitor::~comonitor() {
         }
     }
     _cotype_with_vtables.clear();
-}
-
-HRESULT comonitor::set_breakpoint(const breakpoint &brk, PULONG id) {
-    bool one_time{};
-
-    IDebugBreakpoint2 *dbgbrk{};
-    RETURN_IF_FAILED(_dbgcontrol->AddBreakpoint2(DEBUG_BREAKPOINT_CODE, DEBUG_ANY_ID, &dbgbrk));
-    if (std::holds_alternative<function_breakpoint>(brk)) {
-        RETURN_IF_FAILED(dbgbrk->SetOffsetExpressionWide(std::get<function_breakpoint>(brk).function_name.c_str()));
-    } else {
-        ULONG64 address{};
-        if (std::holds_alternative<function_return_breakpoint>(brk)) {
-            address = std::get<function_return_breakpoint>(brk).address;
-            one_time = true;
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            address = std::get<IUnknown_QueryInterface_breakpoint>(brk).address;
-        } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
-            address = std::get<IClassFactory_CreateInstance_breakpoint>(brk).address;
-        } else {
-            assert(false);
-        }
-        RETURN_IF_FAILED(dbgbrk->SetOffset(address));
-    }
-    ULONG brk_id{};
-    RETURN_IF_FAILED(dbgbrk->GetId(&brk_id));
-    auto flags = DEBUG_BREAKPOINT_ENABLED | DEBUG_BREAKPOINT_ADDER_ONLY | (one_time ? DEBUG_BREAKPOINT_ONE_SHOT : 0);
-    RETURN_IF_FAILED(dbgbrk->AddFlags(flags));
-    _breakpoints.insert({brk_id, brk});
-    if (id != nullptr) {
-        *id = brk_id;
-    }
-    return S_OK;
 }
 
 HRESULT comonitor::create_cobreakpoint(const CLSID &clsid, const IID &iid, DWORD method_num, std::wstring_view method_display_name) {
@@ -205,6 +170,52 @@ HRESULT comonitor::create_cobreakpoint(const CLSID &clsid, const IID &iid, std::
     }
 }
 
+void comonitor::list_breakpoints() const {
+    for (const auto &[brk_id, brk] : _breakpoints) {
+        if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
+            auto &fbrk{std::get<coquery_single_return_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                    std::format(L"{}: return breakpoint (single), CLSID: {:b}, IID: {:b}, address: {:#x}\n", brk_id,
+                                                fbrk.clsid, fbrk.iid, fbrk.address)
+                                        .c_str());
+        } else if (std::holds_alternative<coquery_multi_return_breakpoint>(brk)) {
+            auto &fbrk{std::get<coquery_multi_return_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(
+                DEBUG_OUTPUT_NORMAL,
+                std::format(L"{}: return breakpoint (multi), CLSID: {:b}, address: {:#x}\n", brk_id, fbrk.clsid, fbrk.address).c_str());
+        } else if (std::holds_alternative<function_breakpoint>(brk)) {
+            auto &fbrk{std::get<function_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                    std::format(L"{}: function breakpoint, function name: {}\n", brk_id, fbrk.function_name).c_str());
+        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
+            auto &qibrk{std::get<IUnknown_QueryInterface_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                    std::format(L"{}: IUnknown::QueryInterface breakpoint, CLSID: {:b}, IID: {:b}, address: {:#x}\n",
+                                                brk_id, qibrk.clsid, qibrk.iid, qibrk.address)
+                                        .c_str());
+        } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
+            auto &cibrk{std::get<IClassFactory_CreateInstance_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                    std::format(L"{}: IClassFactory::CreateInstance breakpoint, CLSID: {:b}, address: {:#x}\n", brk_id,
+                                                cibrk.clsid, cibrk.address)
+                                        .c_str());
+        } else if (std::holds_alternative<GetClassFile_breakpoint>(brk)) {
+            auto &b{std::get<GetClassFile_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"{}: GetClassFile breakpoint referencing: {}, thread: {}\n", brk_id,
+                                                                     b.referenced_breakpoint_id, b.match_thread_id)
+                                                             .c_str());
+        } else if (std::holds_alternative<GetClassFile_return_breakpoint>(brk)) {
+            auto &b{std::get<GetClassFile_return_breakpoint>(brk)};
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                                    std::format(L"{}: GetClassFile return breakpoint referencing: {}, thread: {}, address: {:#x}\n", brk_id,
+                                                b.referenced_breakpoint_id, b.match_thread_id, b.address)
+                                        .c_str());
+        } else {
+            assert(false);
+        }
+    }
+}
+
 HRESULT comonitor::register_vtable(const CLSID &clsid, const IID &iid, ULONG64 vtable_addr, bool save_in_database) {
     // the vtable might have been already added by the IClassFactory_CreateInstance method
     if (!_cotype_with_vtables.contains({clsid, iid})) {
@@ -234,7 +245,8 @@ HRESULT comonitor::register_vtable(const CLSID &clsid, const IID &iid, ULONG64 v
         if (_log_filter->is_clsid_allowed(clsid)) {
             ULONG brk_id{};
             if (auto hr{set_breakpoint(IUnknown_QueryInterface_breakpoint{clsid, iid, fn_address}, &brk_id)}; FAILED(hr)) {
-                _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
+                _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid),
+                                  hr);
             }
         }
 
@@ -257,7 +269,7 @@ HRESULT comonitor::register_vtable(const CLSID &clsid, const IID &iid, ULONG64 v
 
 void comonitor::pause() noexcept {
     for (const auto &[brk_id, brk] : _breakpoints) {
-        if (std::holds_alternative<function_return_breakpoint>(brk)) {
+        if (is_onetime_breakpoint(brk)) {
             continue;
         }
         if (auto hr{modify_breakpoint_flag(brk_id, DEBUG_BREAKPOINT_ENABLED, false)}; FAILED(hr)) {
@@ -268,7 +280,7 @@ void comonitor::pause() noexcept {
 
 void comonitor::resume() noexcept {
     for (const auto &[brk_id, brk] : _breakpoints) {
-        if (std::holds_alternative<function_return_breakpoint>(brk)) {
+        if (is_onetime_breakpoint(brk)) {
             continue;
         }
         if (auto hr{modify_breakpoint_flag(brk_id, DEBUG_BREAKPOINT_ENABLED, true)}; FAILED(hr)) {
@@ -337,7 +349,15 @@ void comonitor::handle_module_unload(ULONG64 base_address) {
                 }
                 continue;
             }
-            if (auto b{std::get_if<function_return_breakpoint>(&iter->second)};
+            if (auto b{std::get_if<coquery_single_return_breakpoint>(&iter->second)};
+                b != nullptr && b->address >= base_address && b->address <= base_address + module_size) {
+                if (auto hr2{unset_breakpoint(iter)}; FAILED(hr2)) {
+                    _logger.log_error(std::format(L"Failed to remove a breakpoint {}", iter->first), hr2);
+                    iter++;
+                }
+                continue;
+            }
+            if (auto b{std::get_if<coquery_multi_return_breakpoint>(&iter->second)};
                 b != nullptr && b->address >= base_address && b->address <= base_address + module_size) {
                 if (auto hr2{unset_breakpoint(iter)}; FAILED(hr2)) {
                     _logger.log_error(std::format(L"Failed to remove a breakpoint {}", iter->first), hr2);
@@ -349,35 +369,6 @@ void comonitor::handle_module_unload(ULONG64 base_address) {
         }
     } else {
         LOG_HR(hr);
-    }
-}
-
-void comonitor::list_breakpoints() const {
-    for (const auto &[brk_id, brk] : _breakpoints) {
-        if (std::holds_alternative<function_return_breakpoint>(brk)) {
-            auto &fbrk{std::get<function_return_breakpoint>(brk)};
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"{}: return breakpoint, CLSID: {:b}, IID: {:b}, address: {:#x}\n",
-                                                                     brk_id, fbrk.clsid, fbrk.iid, fbrk.address)
-                                                             .c_str());
-        } else if (std::holds_alternative<function_breakpoint>(brk)) {
-            auto &fbrk{std::get<function_breakpoint>(brk)};
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                                    std::format(L"{}: function breakpoint, function name: {}\n", brk_id, fbrk.function_name).c_str());
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            auto &qibrk{std::get<IUnknown_QueryInterface_breakpoint>(brk)};
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                                    std::format(L"{}: IUnknown::QueryInterface breakpoint, CLSID: {:b}, IID: {:b}, address: {:#x}\n",
-                                                brk_id, qibrk.clsid, qibrk.iid, qibrk.address)
-                                        .c_str());
-        } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
-            auto &cibrk{std::get<IClassFactory_CreateInstance_breakpoint>(brk)};
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                                    std::format(L"{}: IClassFactory::CreateInstance breakpoint, CLSID: {:b}, address: {:#x}\n", brk_id,
-                                                cibrk.clsid, cibrk.address)
-                                        .c_str());
-        } else {
-            assert(false);
-        }
     }
 }
 
@@ -408,115 +399,4 @@ void comonitor::set_filter(std::shared_ptr<cofilter> log_filter) {
             iter++;
         }
     }
-}
-
-// Breakpoint handling
-
-bool comonitor::handle_breakpoint(ULONG id) {
-    if (auto found_brk{_breakpoints.find(id)}; found_brk != std::end(_breakpoints)) {
-        if (auto brk{found_brk->second}; std::holds_alternative<function_return_breakpoint>(brk)) {
-            _breakpoints.erase(found_brk); // one time breakpoint - cv_it won't fire again
-            handle_fuction_return(std::get<function_return_breakpoint>(brk));
-        } else if (std::holds_alternative<function_breakpoint>(brk)) {
-            auto &fbrk{std::get<function_breakpoint>(brk)};
-            if (fbrk.function_name == L"combase!CoCreateInstance") {
-                handle_CoCreateInstance(std::get<function_breakpoint>(brk));
-            } else if (fbrk.function_name == L"combase!CoGetClassObject") {
-                handle_CoGetClassObject(std::get<function_breakpoint>(brk));
-            }
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            handle_IUnknown_QueryInterface(std::get<IUnknown_QueryInterface_breakpoint>(brk));
-        } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
-            handle_IClassFactory_CreateInstance(std::get<IClassFactory_CreateInstance_breakpoint>(brk));
-        } else {
-            assert(false);
-        }
-        return true;
-    } else {
-        return false;
-    }
-}
-
-void comonitor::handle_fuction_return(const function_return_breakpoint &brk) {
-    call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
-
-    HRESULT function_return_code{};
-    RETURN_VOID_IF_FAILED(cc.read_method_return_code(function_return_code));
-
-    if (SUCCEEDED(function_return_code)) {
-        ULONG64 addr{};
-        RETURN_VOID_IF_FAILED(cc.read_pointer(brk.object_address, addr));
-        ULONG64 vtbl_address{};
-        RETURN_VOID_IF_FAILED(cc.read_pointer(addr, vtbl_address));
-
-        log_com_call(brk.clsid, brk.iid, brk.create_function_name);
-
-        register_vtable(brk.clsid, brk.iid, vtbl_address, true);
-    } else {
-        log_com_error(brk.clsid, brk.iid, brk.create_function_name, function_return_code);
-    }
-}
-
-void comonitor::handle_CoCreateInstance(const function_breakpoint &brk) {
-    assert(brk.function_name == L"combase!CoCreateInstance");
-
-    call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
-
-    std::vector<ULONG64> args(5);
-    ULONG64 return_addr{};
-    RETURN_VOID_IF_FAILED(cc.read_method_frame(args, return_addr));
-
-    CLSID clsid{};
-    RETURN_VOID_IF_FAILED(cc.read_object(args[0], &clsid, sizeof(decltype(clsid))));
-    IID iid{};
-    RETURN_VOID_IF_FAILED(cc.read_object(args[3], &iid, sizeof(decltype(iid))));
-
-    set_function_return_breakpoint(clsid, iid, args[4], brk.function_name, return_addr);
-}
-
-void comonitor::handle_CoGetClassObject(const function_breakpoint &brk) {
-    assert(brk.function_name == L"combase!CoGetClassObject");
-
-    call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
-
-    std::vector<ULONG64> args(5);
-    ULONG64 return_addr{};
-    RETURN_VOID_IF_FAILED(cc.read_method_frame(args, return_addr));
-
-    CLSID clsid{};
-    RETURN_VOID_IF_FAILED(cc.read_object(args[0], &clsid, sizeof(decltype(clsid))));
-    IID iid{};
-    RETURN_VOID_IF_FAILED(cc.read_object(args[3], &iid, sizeof(decltype(iid))));
-
-    set_function_return_breakpoint(clsid, iid, args[4], brk.function_name, return_addr);
-}
-
-void comonitor::handle_IUnknown_QueryInterface(const IUnknown_QueryInterface_breakpoint &brk) {
-    static const std::wstring_view function_name{L"IUnknown::QueryInterface"};
-
-    call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
-
-    std::vector<ULONG64> args(3);
-    ULONG64 return_addr{};
-    RETURN_VOID_IF_FAILED(cc.read_method_frame(args, return_addr));
-
-    IID iid{};
-    RETURN_VOID_IF_FAILED(cc.read_object(args[1], &iid, sizeof(decltype(iid))));
-
-    set_function_return_breakpoint(brk.clsid, iid, args[2], function_name.data(), return_addr);
-};
-
-void comonitor::handle_IClassFactory_CreateInstance(const IClassFactory_CreateInstance_breakpoint &brk) {
-    static const std::wstring_view function_name{L"IClassFactory::CreateInstance"};
-
-    call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
-
-    std::vector<ULONG64> args(5);
-    ULONG64 return_addr{};
-    RETURN_VOID_IF_FAILED(cc.read_method_frame(args, return_addr));
-
-    IID iid{};
-    RETURN_VOID_IF_FAILED(cc.read_object(args[2], &iid, sizeof(decltype(iid))));
-
-    set_function_return_breakpoint(brk.clsid, iid, args[3], function_name.data(), return_addr);
 }

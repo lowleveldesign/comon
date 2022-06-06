@@ -6,8 +6,8 @@ find_package(WIL CONFIG REQUIRED)
 find_package(SQLiteCpp CONFIG REQUIRED)
 
 add_library(comon
-	"cometa.cpp" "comonitor.cpp" "ext.cpp" "ext.def" "helpers.cpp" "cohelp.cpp" 
-	  "dbgsession.cpp" "include/comon.h" "include/lfu_cache.h" 
+	"cometa.cpp" "comonitor.cpp" "comonitor_breakpoints.cpp" "ext.cpp" "ext.def" "helpers.cpp"
+	"cohelp.cpp" "dbgsession.cpp" "include/comon.h" "include/lfu_cache.h" 
 	 "include/cometa.h" "include/comonitor.h" "include/dbgsession.h" "include/arch.h" "arch.cpp")
 
 target_include_directories(comon PRIVATE "include")
