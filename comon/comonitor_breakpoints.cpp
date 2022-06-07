@@ -134,6 +134,11 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint &br
 }
 
 void comonitor::handle_coquery_return(const coquery_multi_return_breakpoint &brk) {
+    if (brk.clsid == CLSID {}) {
+        _logger.log_error_dml(std::format(L"CLSID was not resolved for function {}", brk.create_function_name), E_INVALIDARG);
+        return;
+    }
+
     call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
 
     HRESULT function_return_code{};

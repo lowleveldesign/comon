@@ -5,10 +5,14 @@ set(BUILD_SHARED_LIBS YES)
 find_package(WIL CONFIG REQUIRED)
 find_package(SQLiteCpp CONFIG REQUIRED)
 
+configure_file(resource.h resource.h COPYONLY)
+configure_file(resource.rc.in resource.rc @ONLY)
+
 add_library(comon
 	"cometa.cpp" "comonitor.cpp" "comonitor_breakpoints.cpp" "ext.cpp" "ext.def" "helpers.cpp"
-	"cohelp.cpp" "dbgsession.cpp" "include/comon.h" "include/lfu_cache.h" 
-	 "include/cometa.h" "include/comonitor.h" "include/dbgsession.h" "include/arch.h" "arch.cpp")
+	"cohelp.cpp" "dbgsession.cpp" "${CMAKE_CURRENT_BINARY_DIR}/resource.rc" "arch.cpp"
+	"include/comon.h" "include/lfu_cache.h" "include/cometa.h" "include/comonitor.h"
+	"include/dbgsession.h" "include/arch.h")
 
 target_include_directories(comon PRIVATE "include")
 
@@ -21,8 +25,8 @@ target_link_libraries(comon PRIVATE
 )
 
 target_compile_definitions(comon PRIVATE
-	EXT_MAJOR_VER=${CMAKE_PROJECT_VERSION_MAJOR}
-	EXT_MINOR_VER=${CMAKE_PROJECT_VERSION_MINOR}
+	EXT_MAJOR_VER=${comon_VERSION_MAJOR}
+	EXT_MINOR_VER=${comon_VERSION_MINOR}
 )
 
 set_target_properties(comon PROPERTIES

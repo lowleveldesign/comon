@@ -1,9 +1,9 @@
-name: build
+name: release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - '*'
 
 jobs:
   build:
@@ -26,8 +26,15 @@ jobs:
         arch: ${{ matrix.arch }}
 
     - run: |
+        $tagVersions = ([System.IO.Path]::GetFileName("$env:GITHUB_REF") -split "-",0,"SimpleMatch")[0] -split ".",0,"SimpleMatch"
+        $env:COMON_VERSION_MAJOR = $tagVersions[0]
+        $env:COMON_VERSION_MINOR = $tagVersions[1]
+        $today = [DateTime]::Today
+        $env:COMON_VERSION_PATCH = "{0:yy}{1}" -f $today,$today.DayOfYear
+        $env:COMON_VERSION_TWEAK = "$($env:GITHUB_RUN_NUMBER % [int16]::MaxValue)"
         cmake --preset=ninja-${{ matrix.arch }}-release
         cmake --build --preset=ninja-${{ matrix.arch }}-release
+      shell: pwsh
 
     - uses: actions/upload-artifact@main
       with:
