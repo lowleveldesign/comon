@@ -94,7 +94,8 @@ comonitor::comonitor(IDebugClient5 *dbgclient, std::shared_ptr<cometa> cometa, s
         }
     }
 
-    constexpr std::array<std::wstring_view, 3> functions_to_monitor{L"CoCreateInstance", L"CoGetClassObject", L"CoGetInstanceFromFile"};
+    constexpr std::array<std::wstring_view, 4> functions_to_monitor{L"CoCreateInstance", L"CoGetClassObject", L"CoGetInstanceFromFile",
+                                                                    L"CoRegisterClassObject"};
 
     // The COM methods on recent systems were moved from ole32.dll to combase.dll. Here we check where we need to put the breakpoints.
     std::wstring com_dll{L"ole32"};

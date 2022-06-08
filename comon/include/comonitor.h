@@ -56,21 +56,30 @@ class comonitor {
         const ULONG64 address;
     };
 
+    struct coregister_return_breakpoint {
+        const CLSID clsid;
+        const IID iid;
+        const ULONG64 vtbl_address;
+        const std::wstring register_function_name;
+        const ULONG64 address;
+    };
+
     struct function_breakpoint {
         const std::wstring function_name;
         const ULONG64 address;
     };
 
     struct GetClassFile_breakpoint {
-        ULONG referenced_breakpoint_id;
-        ULONG match_thread_id;
+        const ULONG referenced_breakpoint_id;
+        const ULONG match_thread_id;
+        const ULONG64 address;
     };
 
     struct GetClassFile_return_breakpoint {
-        ULONG referenced_breakpoint_id;
-        ULONG match_thread_id;
-        ULONG64 CLSID_address;
-        ULONG64 address;
+        const ULONG referenced_breakpoint_id;
+        const ULONG match_thread_id;
+        const ULONG64 CLSID_address;
+        const ULONG64 address;
     };
 
     struct IUnknown_QueryInterface_breakpoint {
@@ -101,8 +110,8 @@ class comonitor {
     const dbgeng_logger _logger;
 
     using breakpoint = std::variant<function_breakpoint, coquery_single_return_breakpoint, coquery_multi_return_breakpoint,
-                                    IUnknown_QueryInterface_breakpoint, IClassFactory_CreateInstance_breakpoint, GetClassFile_breakpoint,
-                                    GetClassFile_return_breakpoint>;
+                                    coregister_return_breakpoint, IUnknown_QueryInterface_breakpoint,
+                                    IClassFactory_CreateInstance_breakpoint, GetClassFile_breakpoint, GetClassFile_return_breakpoint>;
 
     std::unordered_map<ULONG, breakpoint> _breakpoints{};
     std::unordered_map<std::pair<CLSID, IID>, ULONG64> _cotype_with_vtables{};
@@ -129,7 +138,8 @@ class comonitor {
 
     bool is_onetime_breakpoint(const breakpoint &brk) {
         return std::holds_alternative<GetClassFile_breakpoint>(brk) || std::holds_alternative<coquery_single_return_breakpoint>(brk) ||
-               std::holds_alternative<coquery_multi_return_breakpoint>(brk) || std::holds_alternative<GetClassFile_return_breakpoint>(brk);
+               std::holds_alternative<coquery_multi_return_breakpoint>(brk) || std::holds_alternative<GetClassFile_return_breakpoint>(brk) ||
+               std::holds_alternative<coregister_return_breakpoint>(brk);
     }
 
     HRESULT set_breakpoint(const breakpoint &brk, PULONG brk_id = nullptr);
@@ -192,6 +202,8 @@ class comonitor {
 
     void handle_coquery_return(const coquery_multi_return_breakpoint &brk);
 
+    void handle_coregister_return(const coregister_return_breakpoint &brk);
+
     void handle_CoCreateInstance(const function_breakpoint &);
 
     void handle_IUnknown_QueryInterface(const IUnknown_QueryInterface_breakpoint &brk);
@@ -199,6 +211,8 @@ class comonitor {
     void handle_CoGetClassObject(const function_breakpoint &);
 
     void handle_CoGetInstanceFromFile(const function_breakpoint &brk);
+
+    void handle_CoRegisterClassObject(const function_breakpoint &brk);
 
     void handle_GetClassFile(const GetClassFile_breakpoint &brk);
 
