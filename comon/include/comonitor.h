@@ -58,6 +58,7 @@ class comonitor {
 
     struct function_breakpoint {
         const std::wstring function_name;
+        const ULONG64 address;
     };
 
     struct GetClassFile_breakpoint {

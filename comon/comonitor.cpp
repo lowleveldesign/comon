@@ -94,9 +94,22 @@ comonitor::comonitor(IDebugClient5 *dbgclient, std::shared_ptr<cometa> cometa, s
         }
     }
 
-    for (const auto &m : {L"combase!CoCreateInstance", L"combase!CoGetClassObject", L"combase!CoGetInstanceFromFile"}) {
-        if (auto hr{set_breakpoint(function_breakpoint{m})}; FAILED(hr)) {
-            _logger.log_error(std::format(L"Failed to set a breakpoint on method '{}'", m), hr);
+    constexpr std::array<std::wstring_view, 3> functions_to_monitor{L"CoCreateInstance", L"CoGetClassObject", L"CoGetInstanceFromFile"};
+
+    // The COM methods on recent systems were moved from ole32.dll to combase.dll. Here we check where we need to put the breakpoints.
+    std::wstring com_dll{L"ole32"};
+    if (ULONG64 offset{}; FAILED(_dbgsymbols->GetOffsetByNameWide((com_dll + L"!CoCreateInstance").c_str(), &offset)) || offset == 0) {
+        com_dll = L"combase";
+    }
+
+    for (const auto &f : functions_to_monitor) {
+        ULONG64 offset{};
+        if (auto hr{_dbgsymbols->GetOffsetByNameWide((com_dll + L"!" + f.data()).c_str(), &offset)}; SUCCEEDED(hr)) {
+            if (auto hr2{set_breakpoint(function_breakpoint{f.data(), offset})}; FAILED(hr2)) {
+                _logger.log_error(std::format(L"Failed to set a breakpoint on function '{}'", f), hr2);
+            }
+        } else {
+            _logger.log_error(std::format(L"Failed to resolve function '{}' address", f), hr);
         }
     }
 }
@@ -185,8 +198,9 @@ void comonitor::list_breakpoints() const {
                 std::format(L"{}: return breakpoint (multi), CLSID: {:b}, address: {:#x}\n", brk_id, fbrk.clsid, fbrk.address).c_str());
         } else if (std::holds_alternative<function_breakpoint>(brk)) {
             auto &fbrk{std::get<function_breakpoint>(brk)};
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                                    std::format(L"{}: function breakpoint, function name: {}\n", brk_id, fbrk.function_name).c_str());
+            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"{}: function breakpoint, function name: {}, address: {:#x}\n",
+                                                                     brk_id, fbrk.function_name, fbrk.address)
+                                                             .c_str());
         } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
             auto &qibrk{std::get<IUnknown_QueryInterface_breakpoint>(brk)};
             _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,

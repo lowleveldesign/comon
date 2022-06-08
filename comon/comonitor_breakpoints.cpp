@@ -40,31 +40,31 @@ namespace fs = std::filesystem;
 HRESULT comonitor::set_breakpoint(const breakpoint &brk, PULONG id) {
     IDebugBreakpoint2 *dbgbrk{};
     RETURN_IF_FAILED(_dbgcontrol->AddBreakpoint2(DEBUG_BREAKPOINT_CODE, DEBUG_ANY_ID, &dbgbrk));
+    ULONG64 address{};
     if (std::holds_alternative<function_breakpoint>(brk)) {
-        RETURN_IF_FAILED(dbgbrk->SetOffsetExpressionWide(std::get<function_breakpoint>(brk).function_name.c_str()));
+        address = std::get<function_breakpoint>(brk).address;
     } else if (std::holds_alternative<GetClassFile_breakpoint>(brk)) {
         auto &b{std::get<GetClassFile_breakpoint>(brk)};
         RETURN_IF_FAILED(dbgbrk->SetMatchThreadId(b.match_thread_id));
-        RETURN_IF_FAILED(dbgbrk->SetOffsetExpressionWide(L"ole32!GetClassFile"));
+        RETURN_IF_FAILED(_dbgsymbols->GetOffsetByNameWide(L"ole32!GetClassFile", &address));
+    } else if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
+        address = std::get<coquery_single_return_breakpoint>(brk).address;
+    } else if (std::holds_alternative<coquery_multi_return_breakpoint>(brk)) {
+        address = std::get<coquery_multi_return_breakpoint>(brk).address;
+    } else if (std::holds_alternative<GetClassFile_return_breakpoint>(brk)) {
+        auto &b{std::get<GetClassFile_return_breakpoint>(brk)};
+        address = b.address;
+        RETURN_IF_FAILED(dbgbrk->SetMatchThreadId(b.match_thread_id));
+    } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
+        address = std::get<IUnknown_QueryInterface_breakpoint>(brk).address;
+    } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
+        address = std::get<IClassFactory_CreateInstance_breakpoint>(brk).address;
     } else {
-        ULONG64 address{};
-        if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
-            address = std::get<coquery_single_return_breakpoint>(brk).address;
-        } else if (std::holds_alternative<coquery_multi_return_breakpoint>(brk)) {
-            address = std::get<coquery_multi_return_breakpoint>(brk).address;
-        } else if (std::holds_alternative<GetClassFile_return_breakpoint>(brk)) {
-            auto &b{std::get<GetClassFile_return_breakpoint>(brk)};
-            address = b.address;
-            RETURN_IF_FAILED(dbgbrk->SetMatchThreadId(b.match_thread_id));
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            address = std::get<IUnknown_QueryInterface_breakpoint>(brk).address;
-        } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
-            address = std::get<IClassFactory_CreateInstance_breakpoint>(brk).address;
-        } else {
-            assert(false);
-        }
-        RETURN_IF_FAILED(dbgbrk->SetOffset(address));
+        assert(false);
     }
+
+    RETURN_IF_FAILED(dbgbrk->SetOffset(address));
+
     ULONG brk_id{};
     RETURN_IF_FAILED(dbgbrk->GetId(&brk_id));
     auto flags = DEBUG_BREAKPOINT_ENABLED | DEBUG_BREAKPOINT_ADDER_ONLY | (is_onetime_breakpoint(brk) ? DEBUG_BREAKPOINT_ONE_SHOT : 0);
@@ -84,11 +84,11 @@ bool comonitor::handle_breakpoint(ULONG id) {
             handle_coquery_return(std::get<coquery_multi_return_breakpoint>(brk));
         } else if (std::holds_alternative<function_breakpoint>(brk)) {
             auto &fbrk{std::get<function_breakpoint>(brk)};
-            if (fbrk.function_name == L"combase!CoCreateInstance") {
+            if (fbrk.function_name == L"CoCreateInstance") {
                 handle_CoCreateInstance(std::get<function_breakpoint>(brk));
-            } else if (fbrk.function_name == L"combase!CoGetClassObject") {
+            } else if (fbrk.function_name == L"CoGetClassObject") {
                 handle_CoGetClassObject(std::get<function_breakpoint>(brk));
-            } else if (fbrk.function_name == L"combase!CoGetInstanceFromFile") {
+            } else if (fbrk.function_name == L"CoGetInstanceFromFile") {
                 handle_CoGetInstanceFromFile(std::get<function_breakpoint>(brk));
             }
         } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
@@ -134,7 +134,7 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint &br
 }
 
 void comonitor::handle_coquery_return(const coquery_multi_return_breakpoint &brk) {
-    if (brk.clsid == CLSID {}) {
+    if (brk.clsid == CLSID{}) {
         _logger.log_error_dml(std::format(L"CLSID was not resolved for function {}", brk.create_function_name), E_INVALIDARG);
         return;
     }
@@ -180,7 +180,7 @@ void comonitor::handle_coquery_return(const coquery_multi_return_breakpoint &brk
 }
 
 void comonitor::handle_CoCreateInstance(const function_breakpoint &brk) {
-    assert(brk.function_name == L"combase!CoCreateInstance");
+    assert(brk.function_name == L"CoCreateInstance");
 
     call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
 
@@ -203,7 +203,7 @@ void comonitor::handle_CoCreateInstance(const function_breakpoint &brk) {
 }
 
 void comonitor::handle_CoGetClassObject(const function_breakpoint &brk) {
-    assert(brk.function_name == L"combase!CoGetClassObject");
+    assert(brk.function_name == L"CoGetClassObject");
 
     call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
 
@@ -226,7 +226,7 @@ void comonitor::handle_CoGetClassObject(const function_breakpoint &brk) {
 }
 
 void comonitor::handle_CoGetInstanceFromFile(const function_breakpoint &brk) {
-    assert(brk.function_name == L"combase!CoGetInstanceFromFile");
+    assert(brk.function_name == L"CoGetInstanceFromFile");
 
     call_context cc{_dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch};
 
