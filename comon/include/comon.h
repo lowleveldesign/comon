@@ -181,6 +181,7 @@ class dbgeng_logger
 private:
     const wil::com_ptr<IDebugControl4> _dbgcontrol;
 
+public:
     static std::wstring_view get_error_msg(HRESULT hr) {
         static std::unordered_map<HRESULT, std::wstring> error_messages{};
         if (!error_messages.contains(hr)) {
@@ -200,7 +201,6 @@ private:
         return error_messages.at(hr);
     };
 
-public:
     dbgeng_logger(IDebugControl4* dbgcontrol) :
         _dbgcontrol{ dbgcontrol } {}
 

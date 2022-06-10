@@ -138,8 +138,8 @@ class comonitor {
 
     bool is_onetime_breakpoint(const breakpoint &brk) {
         return std::holds_alternative<GetClassFile_breakpoint>(brk) || std::holds_alternative<coquery_single_return_breakpoint>(brk) ||
-               std::holds_alternative<coquery_multi_return_breakpoint>(brk) || std::holds_alternative<GetClassFile_return_breakpoint>(brk) ||
-               std::holds_alternative<coregister_return_breakpoint>(brk);
+               std::holds_alternative<coquery_multi_return_breakpoint>(brk) ||
+               std::holds_alternative<GetClassFile_return_breakpoint>(brk) || std::holds_alternative<coregister_return_breakpoint>(brk);
     }
 
     HRESULT set_breakpoint(const breakpoint &brk, PULONG brk_id = nullptr);
@@ -164,7 +164,7 @@ class comonitor {
         return bp->SetFlags(flags);
     }
 
-    auto log_com_call(const CLSID &clsid, const IID &iid, std::wstring_view caller_name) {
+    auto log_com_call_success(const CLSID &clsid, const IID &iid, std::wstring_view caller_name) {
         if (_log_filter->is_clsid_allowed(clsid)) {
             ULONG pid{};
             _dbgsystemobjects->GetCurrentProcessId(&pid);
@@ -173,13 +173,14 @@ class comonitor {
 
             auto clsid_name{_cometa->resolve_class_name(clsid)};
             auto iid_name{_cometa->resolve_type_name(iid)};
-            _logger.log_info_dml(
-                std::format(L"<col fg=\"normfg\" bg=\"normbg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} ({})</b></col>", pid,
-                            tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid, iid_name ? *iid_name : L"N/A"));
+            _logger.log_info_dml(std::format(L"<col fg=\"normfg\" bg=\"normbg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
+                                             L"({})</b></col> -> <col fg=\"srccmnt\" bg=\"wbg\">SUCCESS (0x0)</col>",
+                                             pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
+                                             iid_name ? *iid_name : L"N/A"));
         }
     }
 
-    auto log_com_error(const CLSID &clsid, const IID &iid, std::wstring_view caller_name, HRESULT result_code) {
+    auto log_com_call_error(const CLSID &clsid, const IID &iid, std::wstring_view caller_name, HRESULT result_code) {
         if (_log_filter->is_clsid_allowed(clsid)) {
             ULONG pid{};
             _dbgsystemobjects->GetCurrentProcessId(&pid);
@@ -188,10 +189,11 @@ class comonitor {
 
             auto clsid_name{_cometa->resolve_class_name(clsid)};
             auto iid_name = _cometa->resolve_type_name(iid);
-            _logger.log_error_dml(
-                std::format(L"<col fg=\"changed\" bg=\"normbg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} ({})</b></col>", pid,
-                            tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid, iid_name ? *iid_name : L"N/A"),
-                result_code);
+            _logger.log_info_dml(std::format(L"<col fg=\"changed\" bg=\"normbg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
+                                             L"({})</b></col> -> <col fg=\"srcstr\" bg=\"wbg\">ERROR ({:#x}) - {}</col>",
+                                             pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
+                                             iid_name ? *iid_name : L"N/A", static_cast<unsigned long>(result_code),
+                                             dbgeng_logger::get_error_msg(result_code)));
         }
     }
 

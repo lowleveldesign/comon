@@ -128,7 +128,7 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint &br
     RETURN_VOID_IF_FAILED(cc.read_method_return_code(function_return_code));
 
     if (SUCCEEDED(function_return_code)) {
-        log_com_call(brk.clsid, brk.iid, brk.create_function_name);
+        log_com_call_success(brk.clsid, brk.iid, brk.create_function_name);
 
         if (!_cotype_with_vtables.contains({brk.clsid, brk.iid})) {
             ULONG64 object_addr{};
@@ -139,7 +139,7 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint &br
             register_vtable(brk.clsid, brk.iid, vtbl_addr, true);
         }
     } else {
-        log_com_error(brk.clsid, {}, brk.create_function_name, function_return_code);
+        log_com_call_error(brk.clsid, {}, brk.create_function_name, function_return_code);
     }
 }
 
@@ -170,18 +170,18 @@ void comonitor::handle_coquery_return(const coquery_multi_return_breakpoint &brk
             RETURN_VOID_IF_FAILED(cc.read_object(offset + 2 * ptr_size, &hr, sizeof hr));
 
             if (SUCCEEDED(hr)) {
-                log_com_call(brk.clsid, iid, brk.create_function_name);
+                log_com_call_success(brk.clsid, iid, brk.create_function_name);
                 if (!_cotype_with_vtables.contains({brk.clsid, iid})) {
                     ULONG64 vtbl_addr{};
                     RETURN_VOID_IF_FAILED(cc.read_pointer(object_addr, vtbl_addr));
                     register_vtable(brk.clsid, iid, vtbl_addr, true);
                 }
             } else {
-                log_com_error(brk.clsid, iid, brk.create_function_name, hr);
+                log_com_call_error(brk.clsid, iid, brk.create_function_name, hr);
             }
         }
     } else {
-        log_com_error(brk.clsid, {}, brk.create_function_name, function_return_code);
+        log_com_call_error(brk.clsid, {}, brk.create_function_name, function_return_code);
     }
 }
 
@@ -195,9 +195,9 @@ void comonitor::handle_coregister_return(const coregister_return_breakpoint &brk
         if (!_cotype_with_vtables.contains({brk.clsid, brk.iid})) {
             register_vtable(brk.clsid, brk.iid, brk.vtbl_address, true);
         }
-        log_com_call(brk.clsid, brk.iid, brk.register_function_name);
+        log_com_call_success(brk.clsid, brk.iid, brk.register_function_name);
     } else {
-        log_com_error(brk.clsid, {}, brk.register_function_name, function_return_code);
+        log_com_call_error(brk.clsid, {}, brk.register_function_name, function_return_code);
     }
 }
 
