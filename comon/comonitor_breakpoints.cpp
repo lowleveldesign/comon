@@ -128,14 +128,16 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint &br
     RETURN_VOID_IF_FAILED(cc.read_method_return_code(function_return_code));
 
     if (SUCCEEDED(function_return_code)) {
-        ULONG64 object_addr{};
-        RETURN_VOID_IF_FAILED(cc.read_pointer(brk.object_address_address, object_addr));
-        ULONG64 vtbl_addr{};
-        RETURN_VOID_IF_FAILED(cc.read_pointer(object_addr, vtbl_addr));
-
         log_com_call(brk.clsid, brk.iid, brk.create_function_name);
 
-        register_vtable(brk.clsid, brk.iid, vtbl_addr, true);
+        if (!_cotype_with_vtables.contains({brk.clsid, brk.iid})) {
+            ULONG64 object_addr{};
+            RETURN_VOID_IF_FAILED(cc.read_pointer(brk.object_address_address, object_addr));
+            ULONG64 vtbl_addr{};
+            RETURN_VOID_IF_FAILED(cc.read_pointer(object_addr, vtbl_addr));
+
+            register_vtable(brk.clsid, brk.iid, vtbl_addr, true);
+        }
     } else {
         log_com_error(brk.clsid, {}, brk.create_function_name, function_return_code);
     }
@@ -161,25 +163,21 @@ void comonitor::handle_coquery_return(const coquery_multi_return_breakpoint &brk
             IID iid{};
             RETURN_VOID_IF_FAILED(cc.read_object(iid_ptr, &iid, sizeof iid));
 
-            if (!_cotype_with_vtables.contains({brk.clsid, iid})) {
-                ULONG64 object_addr{};
-                RETURN_VOID_IF_FAILED(cc.read_pointer(offset + ptr_size, object_addr));
+            ULONG64 object_addr{};
+            RETURN_VOID_IF_FAILED(cc.read_pointer(offset + ptr_size, object_addr));
 
-                HRESULT hr{};
-                RETURN_VOID_IF_FAILED(cc.read_object(offset + 2 * ptr_size, &hr, sizeof hr));
+            HRESULT hr{};
+            RETURN_VOID_IF_FAILED(cc.read_object(offset + 2 * ptr_size, &hr, sizeof hr));
 
-                if (SUCCEEDED(hr)) {
+            if (SUCCEEDED(hr)) {
+                log_com_call(brk.clsid, iid, brk.create_function_name);
+                if (!_cotype_with_vtables.contains({brk.clsid, iid})) {
                     ULONG64 vtbl_addr{};
                     RETURN_VOID_IF_FAILED(cc.read_pointer(object_addr, vtbl_addr));
-
-                    log_com_call(brk.clsid, iid, brk.create_function_name);
-
                     register_vtable(brk.clsid, iid, vtbl_addr, true);
-                } else {
-                    log_com_error(brk.clsid, iid, brk.create_function_name, hr);
                 }
             } else {
-                log_com_call(brk.clsid, iid, brk.create_function_name);
+                log_com_error(brk.clsid, iid, brk.create_function_name, hr);
             }
         }
     } else {
@@ -194,9 +192,10 @@ void comonitor::handle_coregister_return(const coregister_return_breakpoint &brk
     RETURN_VOID_IF_FAILED(cc.read_method_return_code(function_return_code));
 
     if (SUCCEEDED(function_return_code)) {
+        if (!_cotype_with_vtables.contains({brk.clsid, brk.iid})) {
+            register_vtable(brk.clsid, brk.iid, brk.vtbl_address, true);
+        }
         log_com_call(brk.clsid, brk.iid, brk.register_function_name);
-
-        register_vtable(brk.clsid, brk.iid, brk.vtbl_address, true);
     } else {
         log_com_error(brk.clsid, {}, brk.register_function_name, function_return_code);
     }
@@ -216,12 +215,8 @@ void comonitor::handle_CoCreateInstance(const function_breakpoint &brk) {
     IID iid{};
     RETURN_VOID_IF_FAILED(cc.read_object(args[3], &iid, sizeof iid));
 
-    if (!_cotype_with_vtables.contains({clsid, iid})) {
-        if (auto hr{set_breakpoint(coquery_single_return_breakpoint{clsid, iid, args[4], brk.function_name, return_addr})}; FAILED(hr)) {
-            _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", brk.function_name), hr);
-        }
-    } else {
-        log_com_call(clsid, iid, brk.function_name);
+    if (auto hr{set_breakpoint(coquery_single_return_breakpoint{clsid, iid, args[4], brk.function_name, return_addr})}; FAILED(hr)) {
+        _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", brk.function_name), hr);
     }
 }
 
@@ -239,12 +234,8 @@ void comonitor::handle_CoGetClassObject(const function_breakpoint &brk) {
     IID iid{};
     RETURN_VOID_IF_FAILED(cc.read_object(args[3], &iid, sizeof iid));
 
-    if (!_cotype_with_vtables.contains({clsid, iid})) {
-        if (auto hr{set_breakpoint(coquery_single_return_breakpoint{clsid, iid, args[4], brk.function_name, return_addr})}; FAILED(hr)) {
-            _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", brk.function_name), hr);
-        }
-    } else {
-        log_com_call(clsid, iid, brk.function_name);
+    if (auto hr{set_breakpoint(coquery_single_return_breakpoint{clsid, iid, args[4], brk.function_name, return_addr})}; FAILED(hr)) {
+        _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", brk.function_name), hr);
     }
 }
 
@@ -301,15 +292,11 @@ void comonitor::handle_CoRegisterClassObject(const function_breakpoint &brk) {
 
     constexpr IID iid{__uuidof(IUnknown)};
 
-    if (!_cotype_with_vtables.contains({clsid, iid})) {
-        ULONG64 vtbl_addr{};
-        RETURN_VOID_IF_FAILED(cc.read_pointer(args[1], vtbl_addr));
+    ULONG64 vtbl_addr{};
+    RETURN_VOID_IF_FAILED(cc.read_pointer(args[1], vtbl_addr));
 
-        if (auto hr{set_breakpoint(coregister_return_breakpoint{clsid, iid, vtbl_addr, brk.function_name, return_addr})}; FAILED(hr)) {
-            _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", brk.function_name), hr);
-        }
-    } else {
-        log_com_call(clsid, iid, brk.function_name);
+    if (auto hr{set_breakpoint(coregister_return_breakpoint{clsid, iid, vtbl_addr, brk.function_name, return_addr})}; FAILED(hr)) {
+        _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", brk.function_name), hr);
     }
 }
 
@@ -325,13 +312,8 @@ void comonitor::handle_IUnknown_QueryInterface(const IUnknown_QueryInterface_bre
     IID iid{};
     RETURN_VOID_IF_FAILED(cc.read_object(args[1], &iid, sizeof iid));
 
-    if (!_cotype_with_vtables.contains({brk.clsid, iid})) {
-        if (auto hr{set_breakpoint(coquery_single_return_breakpoint{brk.clsid, iid, args[2], function_name.data(), return_addr})};
-            FAILED(hr)) {
-            _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", function_name), hr);
-        }
-    } else {
-        log_com_call(brk.clsid, iid, function_name);
+    if (auto hr{set_breakpoint(coquery_single_return_breakpoint{brk.clsid, iid, args[2], function_name.data(), return_addr})}; FAILED(hr)) {
+        _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", function_name), hr);
     }
 };
 
@@ -347,13 +329,8 @@ void comonitor::handle_IClassFactory_CreateInstance(const IClassFactory_CreateIn
     IID iid{};
     RETURN_VOID_IF_FAILED(cc.read_object(args[2], &iid, sizeof iid));
 
-    if (!_cotype_with_vtables.contains({brk.clsid, iid})) {
-        if (auto hr{set_breakpoint(coquery_single_return_breakpoint{brk.clsid, iid, args[3], function_name.data(), return_addr})};
-            FAILED(hr)) {
-            _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", function_name), hr);
-        }
-    } else {
-        log_com_call(brk.clsid, iid, function_name);
+    if (auto hr{set_breakpoint(coquery_single_return_breakpoint{brk.clsid, iid, args[3], function_name.data(), return_addr})}; FAILED(hr)) {
+        _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", function_name), hr);
     }
 }
 
