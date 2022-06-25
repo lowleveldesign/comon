@@ -27,6 +27,8 @@ target_link_libraries(comon PRIVATE
 target_compile_definitions(comon PRIVATE
 	EXT_MAJOR_VER=${comon_VERSION_MAJOR}
 	EXT_MINOR_VER=${comon_VERSION_MINOR}
+	EXT_PATCH_VER=${comon_VERSION_PATCH}
+	EXT_TWEAK_VER=${comon_VERSION_TWEAK}
 )
 
 set_target_properties(comon PROPERTIES

@@ -30,7 +30,8 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient *dbgclient, [[maybe_unused]] PCS
     RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
 
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"==============================================================\n");
-    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L" comon v%d.%d - Copyright 2022 Sebastian Solnica\n", EXT_MAJOR_VER, EXT_MINOR_VER);
+    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L" comon v%d.%d.%d.%d - Copyright 2022 Sebastian Solnica\n", EXT_MAJOR_VER, EXT_MINOR_VER,
+                           EXT_PATCH_VER, EXT_TWEAK_VER);
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"==============================================================\n\n");
 
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, LR"(Available commands:

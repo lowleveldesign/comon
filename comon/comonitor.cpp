@@ -149,6 +149,7 @@ HRESULT comonitor::create_cobreakpoint(const CLSID &clsid, const IID &iid, DWORD
 
         return S_OK;
     } else {
+        _logger.log_error(L"Could not locate COM class metadata.", E_INVALIDARG);
         return E_INVALIDARG;
     }
 }
