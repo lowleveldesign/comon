@@ -52,7 +52,7 @@ class version
     std::array<int32_t, 4> _version_nums{};
 
 public:
-    version(const std::wstring& version) : _version{ version } {
+    version(const std::wstring& version): _version{ version } {
         std::wistringstream wss{ version };
         std::wstring token{};
 
@@ -333,7 +333,7 @@ std::vector<covtable> cometa::get_module_vtables(const comodule& comodule) {
 R"(select clsid,iid,vtable from vtables where module_id in (
     select id from modules where name = :module_name and timestamp = :module_timestamp and bitness = :bitness))" };
     query.bindNoCopy(":module_name", u8_module_name);
-    query.bind(":module_timestamp", static_cast<long>(comodule.timestamp));
+    query.bind(":module_timestamp", static_cast<const uint32_t>(comodule.timestamp));
     query.bind(":bitness", comodule.is_64bit ? 64 : 32);
 
     std::vector<covtable> vtables{};
@@ -355,7 +355,7 @@ void cometa::save_module_vtable(const comodule& comodule, const covtable& covtab
         SQLite::Statement query{ *_db,
             "select id from modules where name = :name and timestamp = :timestamp and bitness = :bitness" };
         query.bindNoCopy(":name", u8_module_name);
-        query.bind(":timestamp", static_cast<long>(comodule.timestamp));
+        query.bind(":timestamp", static_cast<const uint32_t>(comodule.timestamp));
         query.bind(":bitness", comodule.is_64bit ? 64 : 32);
 
         if (query.executeStep()) {
@@ -368,7 +368,7 @@ void cometa::save_module_vtable(const comodule& comodule, const covtable& covtab
     auto save_module = [this, &u8_module_name, &comodule]() -> std::optional<int64_t> {
         SQLite::Statement query{ *_db, "insert into modules (name, timestamp, bitness) values (:name, :timestamp, :bitness)" };
         query.bindNoCopy(":name", u8_module_name);
-        query.bind(":timestamp", static_cast<long>(comodule.timestamp));
+        query.bind(":timestamp", static_cast<const uint32_t>(comodule.timestamp));
         query.bind(":bitness", comodule.is_64bit ? 64 : 32);
 
         if (query.exec() == 1) {

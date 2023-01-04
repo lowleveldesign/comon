@@ -11,10 +11,7 @@ configure_file(resource.rc.in resource.rc @ONLY)
 add_library(comon
 	"cometa.cpp" "comonitor.cpp" "comonitor_breakpoints.cpp" "ext.cpp" "ext.def" "helpers.cpp"
 	"cohelp.cpp" "dbgsession.cpp" "${CMAKE_CURRENT_BINARY_DIR}/resource.rc" "arch.cpp"
-	"include/comon.h" "include/lfu_cache.h" "include/cometa.h" "include/comonitor.h"
-	"include/dbgsession.h" "include/arch.h")
-
-target_include_directories(comon PRIVATE "include")
+	"comon.h" "lfu_cache.h" "cometa.h" "comonitor.h" "dbgsession.h" "arch.h")
 
 set_property(TARGET comon PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 

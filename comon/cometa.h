@@ -96,7 +96,7 @@ public:
 
     static bool is_valid_db(const fs::path& path);
 
-    explicit cometa(IDebugControl4* dbgcontrol, const fs::path& db_path) : _logger{ dbgcontrol },
+    explicit cometa(IDebugControl4* dbgcontrol, const fs::path& db_path): _logger{ dbgcontrol },
         _db{ fs::exists(db_path) ? open_db(db_path, dbgcontrol) : init_db(db_path, dbgcontrol) } { }
 
     HRESULT index();

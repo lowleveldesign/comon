@@ -41,7 +41,7 @@ class call_context
 
 public:
     explicit call_context(IDebugControl4* dbgcontrol, IDebugDataSpaces* dbgdataspaces,
-        IDebugRegisters2* dbgregisters, const arch& arch) :
+        IDebugRegisters2* dbgregisters, const arch& arch):
         _dbgcontrol{ dbgcontrol }, _dbgdataspaces{ dbgdataspaces },
         _dbgregisters{ dbgregisters }, _arch{ arch },
         _pointer_size{ std::holds_alternative<arch_x86>(arch) ? 4UL : 8UL } {

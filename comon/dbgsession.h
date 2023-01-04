@@ -17,25 +17,23 @@
 #pragma once
 
 #include <array>
+#include <functional>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
-#include <functional>
 #include <variant>
-#include <memory>
 
 #include <Windows.h>
 #include <wil/com.h>
 #include <wil/result.h>
 
-#include "comon.h"
 #include "cometa.h"
+#include "comon.h"
 #include "comonitor.h"
 
-namespace comon_ext
-{
+namespace comon_ext {
 
-class dbgsession : public DebugBaseEventCallbacksWide
-{
+class dbgsession: public DebugBaseEventCallbacksWide {
 private:
     const wil::com_ptr<IDebugClient5> _dbgclient;
     const wil::com_ptr<IDebugControl4> _dbgcontrol;
@@ -84,7 +82,6 @@ private:
     }
 
 public:
-
     dbgsession();
 
     ~dbgsession() {
@@ -93,30 +90,29 @@ public:
         }
     }
 
-    virtual ULONG __stdcall AddRef(void) override { return 1; }
+    STDMETHOD_(ULONG, AddRef)() override { return 1; }
+    STDMETHOD_(ULONG, Release)() override { return 1; }
 
-    virtual ULONG __stdcall Release(void) override { return 1; }
-
-    virtual HRESULT __stdcall GetInterestMask(PULONG mask) override {
-        *mask = DEBUG_EVENT_EXIT_PROCESS | DEBUG_EVENT_BREAKPOINT |
-            DEBUG_EVENT_LOAD_MODULE | DEBUG_EVENT_UNLOAD_MODULE;
+    STDMETHOD(GetInterestMask)(PULONG mask) override {
+        *mask = DEBUG_EVENT_EXIT_PROCESS | DEBUG_EVENT_BREAKPOINT | DEBUG_EVENT_LOAD_MODULE | DEBUG_EVENT_UNLOAD_MODULE;
         return S_OK;
     }
 
-    virtual HRESULT __stdcall Breakpoint(PDEBUG_BREAKPOINT2 bp) override;
+    STDMETHOD(Breakpoint)(PDEBUG_BREAKPOINT2 bp) override;
 
-    virtual HRESULT __stdcall LoadModule(ULONG64 image_file_handle, ULONG64 base_offset, ULONG module_size,
-        PCWSTR module_name, PCWSTR image_name, ULONG checksum, ULONG timestamp) override;
+    STDMETHOD(LoadModule)
+        (ULONG64 image_file_handle, ULONG64 base_offset, ULONG module_size, PCWSTR module_name, PCWSTR image_name, ULONG checksum,
+            ULONG timestamp) override;
 
-    virtual HRESULT __stdcall UnloadModule(PCWSTR image_base_name, ULONG64 base_offset) override;
+    STDMETHOD(UnloadModule)(PCWSTR image_base_name, ULONG64 base_offset) override;
 
-    virtual HRESULT __stdcall ExitProcess(ULONG exit_code) override;
+    STDMETHOD(ExitProcess)(ULONG exit_code) override;
 
     void attach() {
         if (auto pid{ get_active_process_id() }; _monitors.contains(pid)) {
             _logger.log_info(std::format(L"COM monitor is already enabled for process {0}.", pid));
         } else {
-            _monitors.insert({ pid, comonitor { _dbgclient.get(), _cometa, _log_filter } });
+            _monitors.insert({ pid, comonitor{_dbgclient.get(), _cometa, _log_filter} });
             _logger.log_info_dml(std::format(L"<b>COM monitor enabled for process {0}.</b>", pid));
         }
     }
@@ -139,6 +135,15 @@ public:
     HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, std::wstring_view method_name) {
         if (auto monitor{ find_active_monitor() }; monitor) {
             return monitor->create_cobreakpoint(clsid, iid, method_name);
+        } else {
+            _logger.log_warning(L"COM monitor is not enabled for the current process.");
+            return S_OK;
+        }
+    }
+
+    HRESULT remove_cobreakpoint(ULONG id) {
+        if (auto monitor{ find_active_monitor() }; monitor) {
+            return monitor->remove_cobreakpoint(id);
         } else {
             _logger.log_warning(L"COM monitor is not enabled for the current process.");
             return S_OK;
@@ -181,5 +186,4 @@ public:
     }
 };
 
-}
-
+} // namespace comon_ext
