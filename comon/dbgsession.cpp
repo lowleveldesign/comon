@@ -28,9 +28,8 @@ static const std::wstring_view combase_module_name{ L"combase" };
 
 dbgsession::dbgsession()
     : _dbgclient{ create_IDebugClient() }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
-    _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() }, _cometa{ std::make_shared<cometa>(_dbgcontrol.get(),
-                                                                                                 get_cometa_db_path()) },
-    _logger{ _dbgcontrol.get() }, _log_filter{ std::make_shared<cofilter>(cofilter::filter_type::Disabled) } {
+    _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() }, _cometa{ std::make_shared<cometa>(_dbgcontrol.get(), get_cometa_db_path()) } {
+
     THROW_IF_FAILED(_dbgclient->GetEventCallbacksWide(_prev_callback.put()));
     THROW_IF_FAILED(_dbgclient->SetEventCallbacksWide(this));
 }
@@ -67,20 +66,4 @@ HRESULT dbgsession::UnloadModule([[maybe_unused]] PCWSTR image_base_name, ULONG6
 HRESULT dbgsession::ExitProcess([[maybe_unused]] ULONG exit_code) {
     detach();
     return DEBUG_STATUS_NO_CHANGE;
-}
-
-void dbgsession::pause() noexcept {
-    if (auto monitor{ find_active_monitor() }; monitor) {
-        monitor->pause();
-    } else {
-        _logger.log_warning(L"Comon is not monitoring the current process.");
-    }
-}
-
-void dbgsession::resume() noexcept {
-    if (auto monitor{ find_active_monitor() }; monitor) {
-        monitor->resume();
-    } else {
-        _logger.log_warning(L"Comon is not monitoring the current process.");
-    }
 }

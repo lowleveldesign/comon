@@ -42,8 +42,6 @@ std::wstring wstring_from_guid(const GUID& guid);
 HRESULT try_parse_guid(std::wstring_view ws, GUID& guid);
 
 GUID parse_guid(std::wstring_view ws);
-
-std::vector<std::string> split_args(std::string_view args);
 }
 
 // inspired by boost container hash
@@ -129,52 +127,6 @@ private:
 
 namespace comon_ext
 {
-class cofilter
-{
-public:
-    enum class filter_type
-    {
-        Including,
-        Excluding,
-        Disabled
-    };
-
-private:
-    const filter_type _type;
-    const std::unordered_set<CLSID> _clsids{};
-
-public:
-    cofilter(filter_type type) :
-        _type{ type }, _clsids{} { }
-
-    cofilter(filter_type type, const std::unordered_set<CLSID>& clsids) :
-        _type{ type },
-        _clsids{ clsids } { }
-
-    auto is_clsid_allowed(const CLSID& clsid) {
-        return _type == filter_type::Disabled ||
-            (_type == filter_type::Including && _clsids.contains(clsid)) ||
-            (_type == filter_type::Excluding && !_clsids.contains(clsid));
-    }
-
-    filter_type get_filter_type() const {
-        return _type;
-    }
-
-    auto& get_filtered_clsids() const {
-        return _clsids;
-    }
-
-    static std::wstring_view get_filter_type_name(filter_type type) {
-        static std::unordered_map<filter_type, std::wstring_view> names{
-            { filter_type::Including, L"INCLUDING" },
-            { filter_type::Excluding, L"EXCLUDING" },
-            { filter_type::Disabled, L"DISABLED" }
-        };
-
-        return names.at(type);
-    };
-};
 
 class dbgeng_logger
 {
@@ -201,7 +153,7 @@ public:
         return error_messages.at(hr);
     };
 
-    dbgeng_logger(IDebugControl4* dbgcontrol) :
+    dbgeng_logger(IDebugControl4* dbgcontrol):
         _dbgcontrol{ dbgcontrol } {}
 
     void log_info(std::wstring_view message) const {
@@ -223,7 +175,7 @@ public:
 
     void log_error_dml(std::wstring_view message, HRESULT hr) const {
         LOG_IF_FAILED(_dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_ERROR,
-            std::format(L"[comon] {}, <col fg=\"srcstr\" bg=\"wbg\">error: {:#x} - {}</col>\n",
+            std::format(L"[comon] {}, <col fg=\"srcstr\">error: {:#x} - {}</col>\n",
                 message, static_cast<unsigned long>(hr), get_error_msg(hr)).c_str()));
     }
 };

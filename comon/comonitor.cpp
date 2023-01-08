@@ -25,8 +25,8 @@
 
 #include <DbgEng.h>
 #include <Windows.h>
+
 #include <wil/com.h>
-#include <wil/result.h>
 
 #include "comon.h"
 #include "comonitor.h"
@@ -35,6 +35,9 @@ using namespace comon_ext;
 
 namespace views = std::ranges::views;
 namespace fs = std::filesystem;
+
+namespace
+{
 
 arch get_process_arch(IDebugControl4* dbgcontrol, IDebugSymbols3* dbgsymbols, IDebugRegisters2* dbgregisters) {
     auto init_arch_x86 = [dbgcontrol, dbgregisters](bool is_wow64) {
@@ -80,12 +83,21 @@ HANDLE get_current_process_handle(IDebugSystemObjects* dbgsystemobjects) {
     return reinterpret_cast<HANDLE>(handle);
 }
 
-comonitor::comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, std::shared_ptr<cofilter> log_filter)
+ULONG get_current_process_id(IDebugSystemObjects* dbgsystemobjects) {
+    ULONG pid{};
+    dbgsystemobjects->GetCurrentProcessId(&pid);
+    return pid;
+}
+
+}
+
+comonitor::comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, const cofilter& filter)
     : _dbgclient{ dbgclient }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
     _dbgdataspaces{ _dbgclient.query<IDebugDataSpaces>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
-    _dbgregisters{ _dbgclient.query<IDebugRegisters2>() }, _cometa{ cometa }, _log_filter{ log_filter }, _logger{ _dbgcontrol.get() },
+    _dbgregisters{ _dbgclient.query<IDebugRegisters2>() }, _cometa{ cometa }, _logger{ _dbgcontrol.get() },
     _arch{ get_process_arch(_dbgcontrol.get(), _dbgsymbols.get(), _dbgregisters.get()) },
-    _process_handle{ get_current_process_handle(_dbgsystemobjects.get()) } {
+    _process_handle{ get_current_process_handle(_dbgsystemobjects.get()) }, _process_id{ get_current_process_id(_dbgsystemobjects.get()) },
+    _filter{ filter } {
 
     if (ULONG loaded_modules_cnt, unloaded_modules_cnt;
         SUCCEEDED(_dbgsymbols->GetNumberModules(&loaded_modules_cnt, &unloaded_modules_cnt))) {
@@ -114,9 +126,24 @@ comonitor::~comonitor() {
     _cotype_with_vtables.clear();
 }
 
+HRESULT comonitor::get_module_info(ULONG64 base_address, std::wstring& module_name, ULONG& module_timestamp, ULONG& module_size) {
+    DEBUG_MODULE_PARAMETERS m{};
+    RETURN_IF_FAILED(_dbgsymbols->GetModuleParameters(1, &base_address, DEBUG_ANY_ID /* ignored */, &m));
+
+    module_timestamp = m.TimeDateStamp;
+    module_size = m.Size;
+
+    auto buffer{ std::make_unique<wchar_t[]>(m.ModuleNameSize) };
+    RETURN_IF_FAILED(_dbgsymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE, DEBUG_ANY_ID, base_address, buffer.get(),
+        m.ModuleNameSize, nullptr));
+    module_name.assign(buffer.get(), static_cast<size_t>(m.ModuleNameSize) - 1);
+
+    return S_OK;
+}
+
 HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name) {
     assert(method_num >= 0);
-    if (auto vtable{ _cotype_with_vtables.find({clsid, iid}) }; vtable != std::end(_cotype_with_vtables)) {
+    if (auto vtable{ _cotype_with_vtables.find({ clsid, iid }) }; vtable != std::end(_cotype_with_vtables)) {
         call_context cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch };
         ULONG64 addr{};
         RETURN_IF_FAILED(cc.read_pointer(vtable->second + method_num * cc.get_pointer_size(), addr));
@@ -174,38 +201,9 @@ HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, std::
     }
 }
 
-void comonitor::list_breakpoints() const {
-    for (const auto& [brk_id, brk_data] : _breakpoints) {
-        auto& [brk, addr, _] = brk_data;
-        if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
-            auto& fbrk{ std::get<coquery_single_return_breakpoint>(brk) };
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                std::format(L"{}: return breakpoint (single), CLSID: {:b}, IID: {:b}, address: {:#x}\n",
-                    brk_id, fbrk.clsid, fbrk.iid, addr).c_str());
-        } else if (std::holds_alternative<function_breakpoint>(brk)) {
-            auto& fbrk{ std::get<function_breakpoint>(brk) };
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                std::format(L"{}: function breakpoint, {}, address: {:#x}\n",
-                    brk_id, fbrk.function_name, addr).c_str());
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            auto& qibrk{ std::get<IUnknown_QueryInterface_breakpoint>(brk) };
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                std::format(L"{}: IUnknown::QueryInterface breakpoint, CLSID: {:b}, IID: {:b}, address: {:#x}\n",
-                    brk_id, qibrk.clsid, qibrk.iid, addr)
-                .c_str());
-        } else if (std::holds_alternative<IClassFactory_CreateInstance_breakpoint>(brk)) {
-            auto& cibrk{ std::get<IClassFactory_CreateInstance_breakpoint>(brk) };
-            _dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-                std::format(L"{}: IClassFactory::CreateInstance breakpoint, CLSID: {:b}, address: {:#x}\n", brk_id,
-                    cibrk.clsid, addr)
-                .c_str());
-        } else {
-            assert(false);
-        }
-    }
-}
-
 HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr, bool save_in_database) {
+    assert(is_clsid_allowed(clsid));
+
     // the vtable might have been already added by the IClassFactory_CreateInstance method
     if (!_cotype_with_vtables.contains({ clsid, iid })) {
 
@@ -231,19 +229,18 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
         ULONG64 fn_address{};
         RETURN_IF_FAILED(cc.read_pointer(vtable_addr, fn_address));
 
-        if (_log_filter->is_clsid_allowed(clsid)) {
-            ULONG brk_id{};
-            if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{clsid, iid}, fn_address, &brk_id) }; FAILED(hr)) {
-                _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
-            }
+        if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{ clsid }, fn_address) }; FAILED(hr)) {
+            _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
         }
 
-        _cotype_with_vtables.insert({ {clsid, iid}, vtable_addr });
+        _cotype_with_vtables.insert({ { clsid, iid }, vtable_addr });
 
         // special case for IClassFactory when we need to set breakpoint on the CreateInstance (4th method in the vtbl)
-        if (iid == __uuidof(IClassFactory) && SUCCEEDED((cc.read_pointer(vtable_addr + 3 * cc.get_pointer_size(), fn_address)))) {
-            if (auto hr{ set_breakpoint(IClassFactory_CreateInstance_breakpoint{clsid}, fn_address) }; FAILED(hr)) {
-                _logger.log_error(std::format(L"Failed to set a breakpoint on CreateInstance method (CLSID: {:b})", clsid), hr);
+        if (iid == __uuidof(IClassFactory)) {
+            if (SUCCEEDED((cc.read_pointer(vtable_addr + 3 * cc.get_pointer_size(), fn_address)))) {
+                if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"CreateInstance" }, fn_address) }; FAILED(hr)) {
+                    _logger.log_error(std::format(L"Failed to set a breakpoint on IClassFactory::CreateInstance method (CLSID: {:b})", clsid), hr);
+                }
             }
         }
     } else {
@@ -265,6 +262,7 @@ void comonitor::pause() noexcept {
             _logger.log_error(std::format(L"Error when modifying flag for breakpoint {}", brk_id), hr);
         }
     }
+    _is_paused = true;
 }
 
 void comonitor::resume() noexcept {
@@ -277,24 +275,23 @@ void comonitor::resume() noexcept {
             _logger.log_error(std::format(L"Error when modifying flag for breakpoint {}", brk_id), hr);
         }
     }
+    _is_paused = false;
 }
 
 void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_timestamp, ULONG64 module_base_addr) {
     for (auto& [clsid, iid, vtable] :
         _cometa->get_module_vtables({ module_name, module_timestamp, std::holds_alternative<arch_x64>(_arch) })) {
-        if (_log_filter->is_clsid_allowed(clsid)) {
+        if (is_clsid_allowed(clsid)) {
             call_context cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch };
             if (ULONG64 fn_query_interface{}; SUCCEEDED(cc.read_pointer(module_base_addr + vtable, fn_query_interface))) {
-                if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{clsid, iid }, fn_query_interface) }; FAILED(hr)) {
+                if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{ clsid }, fn_query_interface) }; FAILED(hr)) {
                     _logger.log_error(
                         std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
                 }
             }
         }
-        _cotype_with_vtables.insert({ {clsid, iid}, module_base_addr + vtable });
+        _cotype_with_vtables.insert({ { clsid, iid }, module_base_addr + vtable });
     }
-
-
 
     // if a given module exports DllGetClassObject we will set a breakpoint on it
     std::vector<std::wstring_view> functions_to_monitor{ L"DllGetClassObject" };
@@ -305,6 +302,9 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
         functions_to_monitor.push_back(L"CoRegisterClassObject");
     }
 
+
+    // We are here forcing symbol loading for a specific module. A better approach would be to use an interface
+    // that would give us exported functions per module, but I haven't found a way to do that.
     for (const auto& fn_name : functions_to_monitor) {
         std::wstring fn_fullname{ module_name };
         // when there is a dot in the module name, windbg replaces it with underscore - we need to do the same,
@@ -351,31 +351,49 @@ void comonitor::handle_module_unload(ULONG64 base_address) {
     }
 }
 
-void comonitor::set_filter(std::shared_ptr<cofilter> log_filter) {
-    _log_filter = log_filter;
+void comonitor::log_com_call_success(const CLSID& clsid, const IID& iid, std::wstring_view caller_name) {
+    if (is_clsid_allowed(clsid)) {
+        ULONG tid{};
+        _dbgsystemobjects->GetCurrentThreadId(&tid);
 
-    call_context cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch };
-    for (auto& [key, vtbl] : _cotype_with_vtables) {
-        auto& [clsid, iid] = key;
-        if (_log_filter->is_clsid_allowed(clsid)) {
-            if (ULONG64 fn_address{}; SUCCEEDED(cc.read_pointer(vtbl, fn_address))) {
-                if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{clsid, iid }, fn_address) }; FAILED(hr)) {
-                    _logger.log_error(
-                        std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
-                }
-            }
-        }
+        auto clsid_name{ _cometa->resolve_class_name(clsid) };
+        auto iid_name{ _cometa->resolve_type_name(iid) };
+        _logger.log_info_dml(std::format(L"<col fg=\"normfg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
+            L"({})</b></col> -> <col fg=\"srccmnt\">SUCCESS (0x0)</col>",
+            _process_id, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
+            iid_name ? *iid_name : L"N/A"));
     }
+}
 
-    for (auto iter{ std::begin(_breakpoints) }; iter != std::end(_breakpoints);) {
-        if (auto b{ std::get_if<IUnknown_QueryInterface_breakpoint>(&iter->second.brk) };
-            b != nullptr && !_log_filter->is_clsid_allowed(b->clsid)) {
-            if (auto hr{ unset_breakpoint(iter) }; FAILED(hr)) {
-                _logger.log_error(std::format(L"Failed to remove a breakpoint {}", iter->first), hr);
-                iter++;
-            }
+void comonitor::log_com_call_error(const CLSID& clsid, const IID& iid, std::wstring_view caller_name, HRESULT result_code) {
+    if (is_clsid_allowed(clsid)) {
+        ULONG pid{};
+        _dbgsystemobjects->GetCurrentProcessId(&pid);
+        ULONG tid{};
+        _dbgsystemobjects->GetCurrentThreadId(&tid);
+
+        auto clsid_name{ _cometa->resolve_class_name(clsid) };
+        auto iid_name = _cometa->resolve_type_name(iid);
+        _logger.log_info_dml(std::format(L"<col fg=\"changed\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
+            L"({})</b></col> -> <col fg=\"srcstr\">ERROR ({:#x}) - {}</col>",
+            pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
+            iid_name ? *iid_name : L"N/A", static_cast<unsigned long>(result_code),
+            dbgeng_logger::get_error_msg(result_code)));
+    }
+}
+
+std::unordered_map<CLSID, std::vector<std::pair<ULONG64, IID>>> comonitor::list_cotypes() const {
+    std::unordered_map<CLSID, std::vector<std::pair<ULONG64, IID>>> result{};
+
+    for (const auto& [key, addr] : _cotype_with_vtables) {
+        const auto& [clsid, iid] {key};
+
+        if (!result.contains(clsid)) {
+            result.insert({ clsid, std::vector<std::pair<ULONG64, IID>> { { addr, iid } } });
         } else {
-            iter++;
+            result[clsid].push_back({ addr, iid });
         }
     }
+
+    return result;
 }

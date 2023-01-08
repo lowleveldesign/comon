@@ -9,7 +9,7 @@ configure_file(resource.h resource.h COPYONLY)
 configure_file(resource.rc.in resource.rc @ONLY)
 
 add_library(comon
-	"cometa.cpp" "comonitor.cpp" "comonitor_breakpoints.cpp" "ext.cpp" "ext.def" "helpers.cpp"
+	"cometa.cpp" "comonitor.cpp" "comonitor_com_breakpoints.cpp" "ext.cpp" "ext.def" "helpers.cpp"
 	"cohelp.cpp" "dbgsession.cpp" "${CMAKE_CURRENT_BINARY_DIR}/resource.rc" "arch.cpp"
 	"comon.h" "lfu_cache.h" "cometa.h" "comonitor.h" "dbgsession.h" "arch.h")
 

@@ -133,39 +133,4 @@ HRESULT try_parse_guid(std::wstring_view ws, GUID& guid) {
 
     return ::IIDFromString(ws.data(), &guid);
 }
-
-std::vector<std::string> split_args(std::string_view args) {
-    char citation_char{ '\0' };
-    std::vector<std::string> vargs{};
-    std::string token{};
-
-    for (auto c : args) {
-        if (citation_char != '\0') {
-            if (c == citation_char) {
-                if (!token.empty()) {
-                    vargs.push_back(token);
-                    token.clear();
-                }
-                citation_char = '\0';
-            } else {
-                token.push_back(c);
-            }
-        } else if (c == '"' || c == '\'') {
-            citation_char = c;
-        } else if (std::isspace(c)) {
-            if (!token.empty()) {
-                vargs.push_back(token);
-                token.clear();
-            }
-        } else {
-            token.push_back(c);
-        }
-    }
-
-    if (!token.empty()) {
-        vargs.push_back(token);
-    }
-
-    return vargs;
-}
 }

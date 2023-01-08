@@ -108,7 +108,7 @@ public:
         }
 
         if (auto hr{ index_tlb(tlb_path) }; SUCCEEDED(hr)) {
-            _logger.log_info_dml(std::format(L"'{}' : <col fg=\"srccmnt\" bg=\"wbg\">PARSED</col>", tlb_path));
+            _logger.log_info_dml(std::format(L"'{}' : <col fg=\"srccmnt\">PARSED</col>", tlb_path));
             return S_OK;
         } else {
             _logger.log_error_dml(std::format(L"'{}'", tlb_path), hr);

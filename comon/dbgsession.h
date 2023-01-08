@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
+#include <stdexcept>
 
 #include <Windows.h>
 #include <wil/com.h>
@@ -39,11 +40,8 @@ private:
     const wil::com_ptr<IDebugControl4> _dbgcontrol;
     const wil::com_ptr<IDebugSymbols3> _dbgsymbols;
     const wil::com_ptr<IDebugSystemObjects> _dbgsystemobjects;
-    const dbgeng_logger _logger;
 
     const std::shared_ptr<cometa> _cometa;
-
-    std::shared_ptr<cofilter> _log_filter;
 
     wil::com_ptr<IDebugEventCallbacksWide> _prev_callback{};
 
@@ -74,13 +72,6 @@ private:
         return pid;
     }
 
-    comonitor* find_active_monitor() {
-        if (auto monitor{ _monitors.find(get_active_process_id()) }; monitor != std::end(_monitors)) {
-            return &monitor->second;
-        }
-        return nullptr;
-    }
-
 public:
     dbgsession();
 
@@ -108,12 +99,16 @@ public:
 
     STDMETHOD(ExitProcess)(ULONG exit_code) override;
 
-    void attach() {
-        if (auto pid{ get_active_process_id() }; _monitors.contains(pid)) {
-            _logger.log_info(std::format(L"COM monitor is already enabled for process {0}.", pid));
-        } else {
-            _monitors.insert({ pid, comonitor{_dbgclient.get(), _cometa, _log_filter} });
-            _logger.log_info_dml(std::format(L"<b>COM monitor enabled for process {0}.</b>", pid));
+    comonitor* find_active_monitor() {
+        if (auto monitor{ _monitors.find(get_active_process_id()) }; monitor != std::end(_monitors)) {
+            return &monitor->second;
+        }
+        return nullptr;
+    }
+
+    void attach(const cofilter& filter) {
+        if (auto pid{ get_active_process_id() }; !_monitors.contains(pid)) {
+            _monitors.insert({ pid, comonitor{_dbgclient.get(), _cometa, filter } });
         }
     }
 
@@ -123,67 +118,7 @@ public:
         }
     }
 
-    HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num) {
-        if (auto monitor{ find_active_monitor() }; monitor) {
-            return monitor->create_cobreakpoint(clsid, iid, method_num);
-        } else {
-            _logger.log_warning(L"COM monitor is not enabled for the current process.");
-            return S_OK;
-        }
-    }
-
-    HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, std::wstring_view method_name) {
-        if (auto monitor{ find_active_monitor() }; monitor) {
-            return monitor->create_cobreakpoint(clsid, iid, method_name);
-        } else {
-            _logger.log_warning(L"COM monitor is not enabled for the current process.");
-            return S_OK;
-        }
-    }
-
-    HRESULT remove_cobreakpoint(ULONG id) {
-        if (auto monitor{ find_active_monitor() }; monitor) {
-            return monitor->remove_cobreakpoint(id);
-        } else {
-            _logger.log_warning(L"COM monitor is not enabled for the current process.");
-            return S_OK;
-        }
-    }
-
     cometa& get_metadata() { return *_cometa; }
-
-    const cofilter& get_log_filter() const { return *_log_filter; }
-
-    void set_log_filter(std::shared_ptr<cofilter> log_filter) {
-        // FIXME: what happens here?
-        _log_filter = log_filter;
-        for (auto& [pid, monitor] : _monitors) {
-            monitor.set_filter(log_filter);
-        }
-    }
-
-    HRESULT register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr) {
-        if (auto monitor{ find_active_monitor() }; monitor) {
-            return monitor->register_vtable(clsid, iid, vtable_addr, false);
-        } else {
-            _logger.log_warning(L"COM monitor is not enabled for the current process.");
-            return S_OK;
-        }
-    }
-
-    const dbgeng_logger& get_logger() const { return _logger; }
-
-    void pause() noexcept;
-
-    void resume() noexcept;
-
-    void list_breakpoints() {
-        if (auto monitor{ find_active_monitor() }; monitor) {
-            monitor->list_breakpoints();
-        } else {
-            _logger.log_warning(L"COM monitor is not enabled for the current process.");
-        }
-    }
 };
 
-} // namespace comon_ext
+}

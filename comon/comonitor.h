@@ -25,6 +25,7 @@
 #include <unordered_set>
 #include <variant>
 #include <vector>
+#include <tuple>
 
 #include <Windows.h>
 #include <wil/com.h>
@@ -36,10 +37,24 @@
 
 namespace comon_ext {
 
-namespace fs = std::filesystem;
+struct no_filter {};
+struct including_filter { const std::unordered_set<CLSID> clsids; };
+struct excluding_filter { const std::unordered_set<CLSID> clsids; };
+using cofilter = std::variant<no_filter, including_filter, excluding_filter>;
 
 class comonitor {
 private:
+
+    /* Entry functions (those functions create new class objects):
+     * 
+     * - CoRegisterClassObject
+     * - <module>!DllGetClassObject
+     *
+     * Each entry function creates a return breakpoint if a CLSID should be monitored 
+     * (is_clsid_allowed). On return, we register the created vtable and place breakpoints
+     * on the interface methods, for exampe, IUnknown::QueryInterface or IClassFactory::CreateInstance.
+    */
+
     struct coquery_single_return_breakpoint {
         const CLSID clsid;
         const IID iid;
@@ -61,15 +76,16 @@ private:
 
     struct IUnknown_QueryInterface_breakpoint {
         const CLSID clsid;
-        const IID iid;
     };
 
-    struct IClassFactory_CreateInstance_breakpoint {
+    struct cointerface_method_breakpoint {
         const CLSID clsid;
+        const IID iid;
+        const std::wstring method_name;
     };
 
-    using breakpoint = std::variant<function_breakpoint, coquery_single_return_breakpoint, coregister_return_breakpoint, 
-        IUnknown_QueryInterface_breakpoint, IClassFactory_CreateInstance_breakpoint>;
+    using breakpoint = std::variant<function_breakpoint, coquery_single_return_breakpoint, coregister_return_breakpoint,
+        IUnknown_QueryInterface_breakpoint, cointerface_method_breakpoint>;
 
     struct memory_protect {
         DWORD old_protect;
@@ -82,6 +98,9 @@ private:
         const std::optional<memory_protect> mem_protect;
     };
 
+    struct stats {
+        uint32_t query_count;
+    };
 
     static wil::com_ptr_t<IDebugClient5> create_IDebugClient() {
         wil::com_ptr_t<IDebugClient5> client;
@@ -97,28 +116,31 @@ private:
     const wil::com_ptr<IDebugRegisters2> _dbgregisters;
     const dbgeng_logger _logger;
     const HANDLE _process_handle;
-
-    std::unordered_map<ULONG, breakpoint_data> _breakpoints{};
-    std::unordered_map<std::pair<CLSID, IID>, ULONG64> _cotype_with_vtables{};
-    std::shared_ptr<cofilter> _log_filter;
+    const ULONG _process_id;
 
     const std::shared_ptr<cometa> _cometa;
 
     const arch _arch;
 
-    HRESULT get_module_info(ULONG64 base_address, std::wstring& module_name, ULONG& module_timestamp, ULONG& module_size) {
-        DEBUG_MODULE_PARAMETERS m{};
-        RETURN_IF_FAILED(_dbgsymbols->GetModuleParameters(1, &base_address, DEBUG_ANY_ID /* ignored */, &m));
+    const cofilter _filter;
 
-        module_timestamp = m.TimeDateStamp;
-        module_size = m.Size;
+    bool _is_paused{};
 
-        auto buffer{ std::make_unique<wchar_t[]>(m.ModuleNameSize) };
-        RETURN_IF_FAILED(_dbgsymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE, DEBUG_ANY_ID, base_address, buffer.get(),
-            m.ModuleNameSize, nullptr));
-        module_name.assign(buffer.get(), static_cast<size_t>(m.ModuleNameSize) - 1);
+    std::unordered_map<ULONG, breakpoint_data> _breakpoints{};
+    std::unordered_map<ULONG64, ULONG> _breakpoint_addresses{};
+    std::unordered_map<std::pair<CLSID, IID>, ULONG64> _cotype_with_vtables{};
 
-        return S_OK;
+    HRESULT get_module_info(ULONG64 base_address, std::wstring& module_name, ULONG& module_timestamp, ULONG& module_size);
+
+    auto is_clsid_allowed(const CLSID& clsid) {
+        if (auto fltr = std::get_if<including_filter>(&_filter); fltr) {
+            return fltr->clsids.contains(clsid);
+        }
+        if (auto fltr = std::get_if<excluding_filter>(&_filter); fltr) {
+            return !fltr->clsids.contains(clsid);
+        }
+        assert(std::holds_alternative<no_filter>(_filter));
+        return true;
     }
 
     bool is_onetime_breakpoint(const breakpoint& brk) {
@@ -129,50 +151,17 @@ private:
 
     HRESULT unset_breakpoint(decltype(_breakpoints)::iterator& iter);
 
-    HRESULT modify_breakpoint_flag(ULONG brk_id, ULONG flag, bool enable) {
-        IDebugBreakpoint2* bp;
-        RETURN_IF_FAILED(_dbgcontrol->GetBreakpointById2(brk_id, &bp));
+    HRESULT modify_breakpoint_flag(ULONG brk_id, ULONG flag, bool enable);
 
-        ULONG flags{};
-        RETURN_IF_FAILED(bp->GetFlags(&flags));
-        flags = enable ? (flags | flag) : (flags & ~flag);
-        return bp->SetFlags(flags);
-    }
+    void log_com_call_success(const CLSID& clsid, const IID& iid, std::wstring_view caller_name);
 
-    auto log_com_call_success(const CLSID& clsid, const IID& iid, std::wstring_view caller_name) {
-        if (_log_filter->is_clsid_allowed(clsid)) {
-            ULONG pid{};
-            _dbgsystemobjects->GetCurrentProcessId(&pid);
-            ULONG tid{};
-            _dbgsystemobjects->GetCurrentThreadId(&tid);
-
-            auto clsid_name{ _cometa->resolve_class_name(clsid) };
-            auto iid_name{ _cometa->resolve_type_name(iid) };
-            _logger.log_info_dml(std::format(L"<col fg=\"normfg\" bg=\"normbg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
-                L"({})</b></col> -> <col fg=\"srccmnt\" bg=\"wbg\">SUCCESS (0x0)</col>",
-                pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
-                iid_name ? *iid_name : L"N/A"));
-        }
-    }
-
-    auto log_com_call_error(const CLSID& clsid, const IID& iid, std::wstring_view caller_name, HRESULT result_code) {
-        if (_log_filter->is_clsid_allowed(clsid)) {
-            ULONG pid{};
-            _dbgsystemobjects->GetCurrentProcessId(&pid);
-            ULONG tid{};
-            _dbgsystemobjects->GetCurrentThreadId(&tid);
-
-            auto clsid_name{ _cometa->resolve_class_name(clsid) };
-            auto iid_name = _cometa->resolve_type_name(iid);
-            _logger.log_info_dml(std::format(L"<col fg=\"changed\" bg=\"normbg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
-                L"({})</b></col> -> <col fg=\"srcstr\" bg=\"wbg\">ERROR ({:#x}) - {}</col>",
-                pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
-                iid_name ? *iid_name : L"N/A", static_cast<unsigned long>(result_code),
-                dbgeng_logger::get_error_msg(result_code)));
-        }
-    }
+    void log_com_call_error(const CLSID& clsid, const IID& iid, std::wstring_view caller_name, HRESULT result_code);
 
     HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name);
+
+    HRESULT change_sympath_quiet(const wchar_t* new_sympath);
+
+    HRESULT change_sympath_quiet(const wchar_t* new_sympath, std::unique_ptr<wchar_t[]>& prev_sympath);
 
     /* Breakpoints handling */
     void handle_coquery_return(const coquery_single_return_breakpoint& brk);
@@ -185,10 +174,11 @@ private:
 
     void handle_CoRegisterClassObject(const function_breakpoint& brk);
 
-    void handle_IClassFactory_CreateInstance(const IClassFactory_CreateInstance_breakpoint& brk);
+    void handle_IClassFactory_CreateInstance(const CLSID& clsid);
 
 public:
-    explicit comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, std::shared_ptr<cofilter> log_filter);
+
+    explicit comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, const cofilter& filter);
 
     comonitor(const comonitor&) = delete;
 
@@ -201,7 +191,9 @@ public:
     void handle_module_load(std::wstring_view module_name, ULONG module_timestamp, ULONG64 module_base_addr);
     void handle_module_unload(ULONG64 base_address);
 
-    void list_breakpoints() const;
+    std::vector<std::tuple<ULONG, std::wstring, ULONG64>> list_breakpoints() const;
+
+    std::unordered_map<CLSID, std::vector<std::pair<ULONG64, IID>>> list_cotypes() const; 
 
     HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num);
     HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, std::wstring_view method_name);
@@ -214,11 +206,13 @@ public:
 
     HRESULT register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr, bool save_in_database);
 
+    const cofilter& get_filter() const { return _filter; }
+
     void pause() noexcept;
 
     void resume() noexcept;
 
-    void set_filter(std::shared_ptr<cofilter> log_filter);
+    bool is_paused() const noexcept { return _is_paused; }
 };
 
 } // namespace comon_ext

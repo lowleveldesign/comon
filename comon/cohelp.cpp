@@ -30,7 +30,7 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient * dbgclient, [[maybe_unused]] PC
     RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
 
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"==============================================================\n");
-    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L" comon v%d.%d.%d.%d - Copyright 2022 Sebastian Solnica\n", EXT_MAJOR_VER, EXT_MINOR_VER,
+    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L" comon v%d.%d.%d.%d - Copyright 2023 Sebastian Solnica\n", EXT_MAJOR_VER, EXT_MINOR_VER,
         EXT_PATCH_VER, EXT_TWEAK_VER);
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"==============================================================\n\n");
 
@@ -54,7 +54,8 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient * dbgclient, [[maybe_unused]] PC
   !comon attach
       - starts COM monitor for the active process. If you're debugging a 32-bit WOW64
         process in a 64-bit debugger, make sure you set the effective CPU architecture to x86
-        (.effmach x86)
+        (.effmach x86), use -i to configure an including filter (monitors only the provided CLSIDs)
+        or -e to configure an excluding filter (monitors all CLSIDs except for the provided ones)
   !comon detach
       - stops COM monitor for the active process.
   !comon pause
@@ -87,7 +88,7 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient * dbgclient, [[maybe_unused]] PC
       - creates a breakpoint on a method (identified by its index) in a given COM
         interface (IID) in a given COM class (CLSID)
 
-  !coadd <clsid> <iid> <vtable_address>
+  !coreg <clsid> <iid> <vtable_address>
       - manually add a virtual table address to the COM monitor and bind them with
         a given COM interface (IID) and COM class (CLSID)
 ==============================================================

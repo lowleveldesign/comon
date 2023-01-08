@@ -392,7 +392,7 @@ void cometa::save_module_vtable(const comodule& comodule, const covtable& covtab
 
     if (auto module_id{ get_module_id() }; module_id) {
         save_vtable(*module_id);
-    } else if (module_id = save_module()) {
+    } else if ((module_id = save_module())) {
         save_vtable(*module_id);
     } else {
         _logger.log_error(std::format(L"Error when saving module data: '{}'", comodule.name), E_FAIL);
@@ -496,7 +496,7 @@ HRESULT cometa::index() {
             } else {
                 auto& tlbinfo{ std::get<typelib_info>(ti) };
                 if (auto hr{ index_tlb(tlbinfo.tlb_path.c_str()) }; SUCCEEDED(hr)) {
-                    _logger.log_info_dml(std::format(L"{} ({}) : <col fg=\"srccmnt\" bg=\"wbg\">PARSED</col>", name, tlbinfo.name));
+                    _logger.log_info_dml(std::format(L"{} ({}) : <col fg=\"srccmnt\">PARSED</col>", name, tlbinfo.name));
                 } else {
                     _logger.log_error(std::format(L"{} ({})", name, tlbinfo.name), hr);
                 }

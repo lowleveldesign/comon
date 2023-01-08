@@ -21,6 +21,7 @@
 #include <memory>
 #include <tuple>
 #include <vector>
+#include <span>
 
 #include <DbgEng.h>
 #include <wil/com.h>
@@ -32,7 +33,46 @@ using namespace comon_ext;
 
 namespace fs = std::filesystem;
 
+namespace {
 dbgsession g_dbgsession{};
+
+const wchar_t* monitor_not_enabled_error{ L"COM monitor not enabled for the current process." };
+
+std::vector<std::string> split_args(std::string_view args) {
+    char citation_char{ '\0' };
+    std::vector<std::string> vargs{};
+    std::string token{};
+
+    for (auto c : args) {
+        if (citation_char != '\0') {
+            if (c == citation_char) {
+                if (!token.empty()) {
+                    vargs.push_back(token);
+                    token.clear();
+                }
+                citation_char = '\0';
+            } else {
+                token.push_back(c);
+            }
+        } else if (c == '"' || c == '\'') {
+            citation_char = c;
+        } else if (std::isspace(c) || c == ',') {
+            if (!token.empty()) {
+                vargs.push_back(token);
+                token.clear();
+            }
+        } else {
+            token.push_back(c);
+        }
+    }
+
+    if (!token.empty()) {
+        vargs.push_back(token);
+    }
+
+    return vargs;
+}
+}
 
 extern "C" HRESULT CALLBACK DebugExtensionInitialize(PULONG version, PULONG flags) {
     *version = DEBUG_EXTENSION_VERSION(EXT_MAJOR_VER, EXT_MINOR_VER);
@@ -148,29 +188,49 @@ extern "C" HRESULT CALLBACK cobp(IDebugClient * dbgclient, PCSTR args) {
     RETURN_IF_FAILED(try_parse_guid(widen(vargs[0]), clsid));
     IID iid;
     RETURN_IF_FAILED(try_parse_guid(widen(vargs[1]), iid));
-    try {
-        DWORD method_num{ std::stoul(vargs[2]) };
-        return g_dbgsession.create_cobreakpoint(clsid, iid, method_num);
-    } catch (const std::invalid_argument&) {
-        // we will try with a method name
-        return g_dbgsession.create_cobreakpoint(clsid, iid, widen(vargs[2]));
+
+    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
+        try {
+            DWORD method_num{ std::stoul(vargs[2]) };
+            return monitor->create_cobreakpoint(clsid, iid, method_num);
+        } catch (const std::invalid_argument&) {
+            // we will try with a method name
+            return monitor->create_cobreakpoint(clsid, iid, widen(vargs[2]));
+        }
+    } else {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
+        return E_FAIL;
     }
 }
 
 extern "C" HRESULT CALLBACK cobl([[maybe_unused]] IDebugClient * dbgclient, [[maybe_unused]] PCSTR args) {
-    g_dbgsession.list_breakpoints();
-    return S_OK;
-}
+    wil::com_ptr_t<IDebugControl4> dbgcontrol;
+    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
 
-extern "C" HRESULT CALLBACK cobd([[maybe_unused]] IDebugClient * dbgclient, PCSTR args) {
-    try {
-        return g_dbgsession.remove_cobreakpoint(std::stoul(args));
-    } catch (const std::exception&) {
-        return E_INVALIDARG;
+    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
+        for (const auto& [id, desc, addr] : monitor->list_breakpoints()) {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"{}: {}, address: {:#x}\n", id, desc, addr).c_str());
+        }
+        return S_OK;
+    } else {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
+        return E_FAIL;
     }
 }
 
-extern "C" HRESULT CALLBACK coadd(IDebugClient * dbgclient, PCSTR args) {
+extern "C" HRESULT CALLBACK cobd([[maybe_unused]] IDebugClient * dbgclient, PCSTR args) {
+    wil::com_ptr_t<IDebugControl4> dbgcontrol;
+    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
+
+    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
+        return monitor->remove_cobreakpoint(std::stoul(args));
+    } else {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
+        return E_FAIL;
+    }
+}
+
+extern "C" HRESULT CALLBACK coreg(IDebugClient * dbgclient, PCSTR args) {
     wil::com_ptr_t<IDebugControl4> dbgcontrol;
     RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
 
@@ -185,55 +245,12 @@ extern "C" HRESULT CALLBACK coadd(IDebugClient * dbgclient, PCSTR args) {
     RETURN_IF_FAILED(try_parse_guid(widen(vargs[0]), clsid));
     IID iid;
     RETURN_IF_FAILED(try_parse_guid(widen(vargs[1]), iid));
-    try {
+
+    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
         ULONG64 vtable_addr{ std::stoull(vargs[2]) };
-        return g_dbgsession.register_vtable(clsid, iid, vtable_addr);
-    } catch (const std::invalid_argument&) {
-        // we will try with a method name
-        return g_dbgsession.create_cobreakpoint(clsid, iid, widen(vargs[2]));
-    }
-}
-
-extern "C" HRESULT CALLBACK colog(IDebugClient * dbgclient, PCSTR args) {
-    wil::com_ptr_t<IDebugControl4> dbgcontrol;
-    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
-    try {
-        auto& filter{ g_dbgsession.get_log_filter() };
-
-        if (auto vargs{ split_args(args) }; vargs.empty()) {
-            dbgcontrol->OutputWide(
-                DEBUG_OUTPUT_NORMAL,
-                std::format(L"COM monitor log filter: {}\n", cofilter::get_filter_type_name(filter.get_filter_type())).c_str());
-            if (!filter.get_filtered_clsids().empty()) {
-                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nCLSIDs:\n");
-                for (auto& clsid : filter.get_filtered_clsids()) {
-                    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"- {:b}\n", clsid).c_str());
-                }
-            }
-        } else if (vargs.size() == 2 && (vargs[0] == "include" || vargs[0] == "exclude")) {
-            auto new_filter_type = vargs[0] == "include" ? cofilter::filter_type::Including : cofilter::filter_type::Excluding;
-
-            if (filter.get_filter_type() != new_filter_type) {
-                dbgcontrol->OutputWide(
-                    DEBUG_OUTPUT_NORMAL,
-                    std::format(L"COM monitor log filter switched to: {}\n", cofilter::get_filter_type_name(new_filter_type)).c_str());
-                g_dbgsession.set_log_filter(
-                    std::make_shared<cofilter>(new_filter_type, std::unordered_set<CLSID>{parse_guid(widen(vargs[1]))}));
-            } else {
-                auto filter_set{ filter.get_filtered_clsids() };
-                filter_set.insert(parse_guid(widen(vargs[1])));
-                g_dbgsession.set_log_filter(std::make_shared<cofilter>(new_filter_type, filter_set));
-            }
-        } else if (vargs.size() == 1 && vargs[0] == "none") {
-            g_dbgsession.set_log_filter(std::make_shared<cofilter>(cofilter::filter_type::Including));
-        } else if (vargs.size() == 1 && vargs[0] == "all") {
-            g_dbgsession.set_log_filter(std::make_shared<cofilter>(cofilter::filter_type::Disabled));
-        } else {
-            throw std::invalid_argument{ "Invalid arguments. Run !cohelp to check the syntax." };
-        }
-        return S_OK;
-    } catch (const std::exception& ex) {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, std::format(L"Error: {}\n", widen(ex.what())).c_str());
+        return monitor->register_vtable(clsid, iid, vtable_addr, false);
+    } else {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
         return E_FAIL;
     }
 }
@@ -242,24 +259,91 @@ extern "C" HRESULT CALLBACK comon(IDebugClient * dbgclient, PCSTR args) {
     wil::com_ptr_t<IDebugControl4> dbgcontrol;
     RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
 
+    auto print_filter = [&dbgcontrol](const cofilter& filter) {
+        auto print_clsids = [&dbgcontrol](const std::unordered_set<CLSID>& clsids) {
+            for (auto& clsid : clsids) {
+                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"- {:b}\n", clsid).c_str());
+            }
+        };
+
+        if (auto fltr = std::get_if<including_filter>(&filter); fltr) {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nCLSIDs to monitor:\n");
+            print_clsids(fltr->clsids);
+            return;
+        }
+        if (auto fltr = std::get_if<excluding_filter>(&filter); fltr) {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nCLSIDs to EXCLUDE while monitoring:\n");
+            print_clsids(fltr->clsids);
+            return;
+        }
+        assert(std::holds_alternative<no_filter>(filter));
+    };
+
+    auto parse_filter = [](std::span<const std::string> args) -> cofilter {
+        std::unordered_set<CLSID> clsids{};
+        for (auto iter{ std::crbegin(args) }; iter != std::crend(args); iter++) {
+            if (*iter == "-i") {
+                return including_filter{ clsids };
+            }
+            if (*iter == "-e") {
+                return excluding_filter{ clsids };
+            }
+            GUID clsid;
+            if (SUCCEEDED(try_parse_guid(widen(*iter), clsid))) {
+                clsids.insert(clsid);
+            }
+        }
+        if (clsids.size() > 0) {
+            return including_filter{ clsids };
+        }
+        return no_filter{};
+    };
+
     auto vargs{ split_args(args) };
-    if (vargs.size() != 1) {
+    if (vargs.size() < 1) {
         dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
         return E_INVALIDARG;
     }
 
-    if (vargs[0] == "attach") {
-        g_dbgsession.attach();
-    } else if (vargs[0] == "pause") {
-        g_dbgsession.pause();
-    } else if (vargs[0] == "resume") {
-        g_dbgsession.resume();
-    } else if (vargs[0] == "detach") {
-        g_dbgsession.detach();
+    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
+        if (vargs[0] == "attach") {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"COM monitor is already enabled for the current process.");
+            return E_FAIL;
+        } else if (vargs[0] == "pause") {
+            monitor->pause();
+        } else if (vargs[0] == "resume") {
+            monitor->resume();
+        } else if (vargs[0] == "detach") {
+            g_dbgsession.detach();
+        } else if (vargs[0] == "status") {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"COM monitor is {}\n",
+                monitor->is_paused() ? L"PAUSED" : L"RUNNING").c_str());
+
+            auto& cometa{ g_dbgsession.get_metadata() };
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nCOM types recorded for the current process:\n");
+            for (auto& [clsid, vtables] : monitor->list_cotypes()) {
+                auto clsid_name{ cometa.resolve_class_name(clsid) };
+                dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, 
+                    std::format(L"\n<col fg=\"srcannot\">- CLSID: <b>{:b} ({})</b></col>\n\n", clsid, clsid_name ? *clsid_name : L"N/A").c_str());
+                for (auto& [addr, iid] : vtables) {
+                    auto iid_name{ cometa.resolve_type_name(iid) };
+                    dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, 
+                        std::format(L"  - IID: <b>{:b} ({})</b>, address: {:#x}\n", iid, iid_name ? *iid_name : L"N/A", addr).c_str());
+                }
+            }
+        } else {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
+            return E_INVALIDARG;
+        }
+        return S_OK;
+    } else if (vargs[0] == "attach") {
+        auto filter = parse_filter(std::span{ vargs }.subspan(1));
+        g_dbgsession.attach(filter);
+        dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, L"<b>COM monitor enabled for the current process.</b>\n");
+        print_filter(filter);
+        return S_OK;
     } else {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
-        return E_INVALIDARG;
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
+        return E_FAIL;
     }
-
-    return S_OK;
 }
