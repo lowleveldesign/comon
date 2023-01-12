@@ -28,7 +28,7 @@ Check [**the documentation**](https://wtrace.net/documentation/comon) to learn m
   !cometa showc <clsid>
       - shows virtual tables registered for a given CLSID (COM class ID)
 
-  !comon attach [[-i|-e] {clsid1} {clsid1} ...]
+  !comon attach [[-i|-e] {clsid1} {clsid2} ...]
       - starts COM monitor for the active process. If you're debugging a 32-bit WOW64
         process in a 64-bit debugger, make sure you set the effective CPU architecture to x86
         (.effmach x86), use -i to configure an including filter (monitors only the provided CLSIDs)
@@ -39,6 +39,9 @@ Check [**the documentation**](https://wtrace.net/documentation/comon) to learn m
       - pauses COM monitoring for the active process.
   !comon resume
       - resumes COM monitoring for the active process.
+  !comon status
+      - shows the current monitoring status. It also lists all the virtual tables registered
+        for a given process providing their IIDs and CLSIDs
 
   !cobp <clsid> <iid> <method_name>
       - creates a breakpoint on a method (identified by its name) in a given COM

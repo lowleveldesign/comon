@@ -302,7 +302,6 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
         functions_to_monitor.push_back(L"CoRegisterClassObject");
     }
 
-
     // We are here forcing symbol loading for a specific module. A better approach would be to use an interface
     // that would give us exported functions per module, but I haven't found a way to do that.
     for (const auto& fn_name : functions_to_monitor) {
