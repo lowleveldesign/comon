@@ -33,14 +33,14 @@ using arch = std::variant<arch_x86, arch_x64>;
 class call_context
 {
     const wil::com_ptr<IDebugControl4> _dbgcontrol;
-    const wil::com_ptr<IDebugDataSpaces> _dbgdataspaces;
+    const wil::com_ptr<IDebugDataSpaces3> _dbgdataspaces;
     const wil::com_ptr<IDebugRegisters2> _dbgregisters;
 
     const arch _arch;
     const ULONG _pointer_size;
 
 public:
-    explicit call_context(IDebugControl4* dbgcontrol, IDebugDataSpaces* dbgdataspaces,
+    explicit call_context(IDebugControl4* dbgcontrol, IDebugDataSpaces3* dbgdataspaces,
         IDebugRegisters2* dbgregisters, const arch& arch):
         _dbgcontrol{ dbgcontrol }, _dbgdataspaces{ dbgdataspaces },
         _dbgregisters{ dbgregisters }, _arch{ arch },
@@ -48,9 +48,7 @@ public:
     }
 
     HRESULT read_pointer(ULONG64 addr, ULONG64& value) {
-        ULONG bytes_read{};
-        RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(addr, &value, _pointer_size, &bytes_read));
-        RETURN_HR_IF(E_UNEXPECTED, bytes_read != _pointer_size);
+        RETURN_IF_FAILED(_dbgdataspaces->ReadPointersVirtual(1, addr, &value));
         return S_OK;
     }
 

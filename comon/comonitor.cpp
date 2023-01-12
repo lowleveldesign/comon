@@ -93,7 +93,7 @@ ULONG get_current_process_id(IDebugSystemObjects* dbgsystemobjects) {
 
 comonitor::comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, const cofilter& filter)
     : _dbgclient{ dbgclient }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
-    _dbgdataspaces{ _dbgclient.query<IDebugDataSpaces>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
+    _dbgdataspaces{ _dbgclient.query<IDebugDataSpaces3>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
     _dbgregisters{ _dbgclient.query<IDebugRegisters2>() }, _cometa{ cometa }, _logger{ _dbgcontrol.get() },
     _arch{ get_process_arch(_dbgcontrol.get(), _dbgsymbols.get(), _dbgregisters.get()) },
     _process_handle{ get_current_process_handle(_dbgsystemobjects.get()) }, _process_id{ get_current_process_id(_dbgsystemobjects.get()) },

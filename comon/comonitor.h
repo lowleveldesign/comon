@@ -111,7 +111,7 @@ private:
     const wil::com_ptr<IDebugClient5> _dbgclient;
     const wil::com_ptr<IDebugControl4> _dbgcontrol;
     const wil::com_ptr<IDebugSymbols3> _dbgsymbols;
-    const wil::com_ptr<IDebugDataSpaces> _dbgdataspaces;
+    const wil::com_ptr<IDebugDataSpaces3> _dbgdataspaces;
     const wil::com_ptr<IDebugSystemObjects> _dbgsystemobjects;
     const wil::com_ptr<IDebugRegisters2> _dbgregisters;
     const dbgeng_logger _logger;
