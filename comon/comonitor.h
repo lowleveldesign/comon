@@ -159,9 +159,7 @@ private:
 
     HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name);
 
-    HRESULT change_sympath_quiet(const wchar_t* new_sympath);
-
-    HRESULT change_sympath_quiet(const wchar_t* new_sympath, std::unique_ptr<wchar_t[]>& prev_sympath);
+    std::variant<ULONG64, HRESULT> get_exported_function_addr(ULONG64 module_base_addr, std::string_view function_name) const;
 
     /* Breakpoints handling */
     void handle_coquery_return(const coquery_single_return_breakpoint& brk);

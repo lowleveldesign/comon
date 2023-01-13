@@ -22,6 +22,7 @@
 #include <ranges>
 #include <string>
 #include <utility>
+#include <memory>
 
 #include <DbgEng.h>
 #include <Windows.h>
@@ -278,6 +279,40 @@ void comonitor::resume() noexcept {
     _is_paused = false;
 }
 
+std::variant<ULONG64, HRESULT> comonitor::get_exported_function_addr(ULONG64 module_base_addr, std::string_view function_name) const {
+    IMAGE_NT_HEADERS64 headers;
+    RETURN_IF_FAILED(_dbgdataspaces->ReadImageNtHeaders(module_base_addr, &headers));
+
+    auto export_data_directory = headers.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    IMAGE_EXPORT_DIRECTORY export_table;
+    RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_data_directory.VirtualAddress, &export_table, sizeof export_table, nullptr));
+
+    ULONG function_name_buffer_len{ function_name.size() + 1 };
+    auto function_name_buffer{ std::make_unique<char[]>(function_name_buffer_len) };
+    for (DWORD i = 0; i < export_table.NumberOfNames; i++)
+    {
+        ULONG64 function_name_addr{};
+        RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_table.AddressOfNames + i * sizeof(DWORD), &function_name_addr, sizeof(DWORD), nullptr));
+
+        ULONG bytes_read{};
+        if (SUCCEEDED(_dbgdataspaces->ReadVirtual(module_base_addr + function_name_addr, function_name_buffer.get(), function_name_buffer_len * sizeof(char), &bytes_read))
+            && bytes_read == function_name_buffer_len * sizeof(char) && function_name_buffer[function_name.size()] == '\0'
+            && std::string_view{ function_name_buffer.get(), function_name.size() } == function_name) {
+
+            // the name matches, time to find the function ordinal
+            WORD ordinal{};
+            RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_table.AddressOfNameOrdinals + i * sizeof(WORD), &ordinal, sizeof ordinal, nullptr));
+
+            ULONG64 function_offset{};
+            ULONG64 function_offset_addr{ module_base_addr + export_table.AddressOfFunctions + ordinal * sizeof(DWORD) };
+            RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(function_offset_addr, &function_offset, sizeof(DWORD), NULL));
+
+            return module_base_addr + function_offset;
+        }
+    }
+    return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+}
+
 void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_timestamp, ULONG64 module_base_addr) {
     for (auto& [clsid, iid, vtable] :
         _cometa->get_module_vtables({ module_name, module_timestamp, std::holds_alternative<arch_x64>(_arch) })) {
@@ -294,25 +329,28 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
     }
 
     // if a given module exports DllGetClassObject we will set a breakpoint on it
-    std::vector<std::wstring_view> functions_to_monitor{ L"DllGetClassObject" };
-    if (module_name == L"ole32" || module_name == L"combase") {
-        // additional function breakpoints related to COM
-        // NOTE: on older systems those functions were located in ole32.dll, in newer
-        // systems they are in combase.dll
-        functions_to_monitor.push_back(L"CoRegisterClassObject");
-    }
+    constexpr std::wstring_view functions_to_monitor[] {
+        L"DllGetClassObject", L"CoRegisterClassObject"
+    };
+    constexpr std::string_view functions_to_monitor_ansi[] {
+        "DllGetClassObject", "CoRegisterClassObject"
+    };
 
-    // We are here forcing symbol loading for a specific module. A better approach would be to use an interface
-    // that would give us exported functions per module, but I haven't found a way to do that.
-    for (const auto& fn_name : functions_to_monitor) {
+    // those arrays must be always in sync
+    assert(_countof(functions_to_monitor) == _countof(functions_to_monitor_ansi));
+
+    // additional function breakpoints related to COM are enabled only for specific modules
+    int index_limit = (module_name == L"ole32" || module_name == L"combase") ? _countof(functions_to_monitor) : 1;
+
+    for (int i = 0; i < index_limit; i++) {
+        std::wstring fn_name{functions_to_monitor[i]};
         std::wstring fn_fullname{ module_name };
-        // when there is a dot in the module name, windbg replaces it with underscore - we need to do the same,
-        // otherwise, symbol resolution won't work
+        // when there is a dot in the module name, windbg replaces it with underscore
         std::replace(std::begin(fn_fullname), std::end(fn_fullname), L'.', L'_');
         fn_fullname.append(L"!").append(fn_name);
 
-        if (ULONG64 offset{}; SUCCEEDED(_dbgsymbols->GetOffsetByNameWide(fn_fullname.c_str(), &offset))) {
-            if (auto hr{ set_breakpoint(function_breakpoint{ fn_fullname }, offset) }; FAILED(hr)) {
+        if (auto fn_addr{ get_exported_function_addr(module_base_addr, functions_to_monitor_ansi[i]) }; std::holds_alternative<ULONG64>(fn_addr)) {
+            if (auto hr{ set_breakpoint(function_breakpoint{ fn_fullname }, std::get<ULONG64>(fn_addr)) }; FAILED(hr)) {
                 _logger.log_error(std::format(L"Failed to set a breakpoint on function '{}'", fn_fullname), hr);
             }
         }
