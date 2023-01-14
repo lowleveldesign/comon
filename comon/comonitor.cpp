@@ -98,65 +98,6 @@ std::variant<comonitor::module_info, HRESULT> comonitor::get_module_info(ULONG64
     return module_info{ std::wstring{ buffer.get(), static_cast<size_t>(m.ModuleNameSize) - 1 }, m.TimeDateStamp, m.Size };
 }
 
-HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name) {
-    assert(method_num >= 0);
-    if (auto vtable{ _cotype_with_vtables.find({ clsid, iid }) }; vtable != std::end(_cotype_with_vtables)) {
-        ULONG64 addr{};
-        RETURN_IF_FAILED(_cc.read_pointer(vtable->second + method_num * _cc.get_pointer_size(), addr));
-
-        IDebugBreakpoint2* brk{};
-        RETURN_IF_FAILED(_dbgcontrol->AddBreakpoint2(DEBUG_BREAKPOINT_CODE, DEBUG_ANY_ID, &brk));
-        RETURN_IF_FAILED(brk->SetOffset(addr));
-
-        auto clsid_name{ _cometa->resolve_class_name(clsid) };
-        auto iid_name{ _cometa->resolve_type_name(iid) };
-        auto cmd{ std::format(
-            L".printf /D \"== Method <b>{} [{}]</b> called on a COM object (CLSID: <b>{:b} ({})</b>, IID <b>{:b} ({})</b>) ==\"; .echo",
-            method_display_name, method_num, iid, iid_name ? *iid_name : L"N/A", clsid, clsid_name ? *clsid_name : L"N/A") };
-        RETURN_IF_FAILED(brk->SetCommandWide(cmd.c_str()));
-
-        ULONG brk_id{};
-        RETURN_IF_FAILED(brk->GetId(&brk_id));
-        RETURN_IF_FAILED(brk->AddFlags(DEBUG_BREAKPOINT_ENABLED));
-
-        return S_OK;
-    } else {
-        _logger.log_error(L"Could not locate COM class metadata.", E_INVALIDARG);
-        return E_INVALIDARG;
-    }
-}
-
-HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num) {
-    if (method_num < 0) {
-        return E_INVALIDARG;
-    }
-
-    auto cotype{ _cometa->resolve_type(iid) };
-
-    std::wstring method_name{};
-    if (cotype && cotype->methods_available) {
-        if (auto methods{ _cometa->get_type_methods(iid) }; methods && methods->size() > method_num) {
-            method_name = methods->at(method_num);
-        }
-    }
-    return create_cobreakpoint(clsid, iid, method_num, method_name);
-}
-
-HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, std::wstring_view method_name) {
-    if (auto methods{ _cometa->get_type_methods(iid) }; methods) {
-        if (auto res{ std::ranges::find(*methods, method_name) }; res != std::end(*methods)) {
-            auto method_num = static_cast<DWORD>(res - std::begin(*methods));
-            return create_cobreakpoint(clsid, iid, method_num, method_name);
-        } else {
-            _logger.log_error(L"Could not resolve the method name.", E_INVALIDARG);
-            return E_INVALIDARG;
-        }
-    } else {
-        _logger.log_error(L"No methods found for the type.", E_INVALIDARG);
-        return E_INVALIDARG;
-    }
-}
-
 void comonitor::try_adding_synthetic_symbols(const IID& iid, ULONG64 vtable_addr) const {
     auto iid_name{ _cometa->resolve_type_name(iid) };
 

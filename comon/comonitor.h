@@ -163,8 +163,6 @@ private:
 
     void log_com_call_error(const CLSID& clsid, const IID& iid, std::wstring_view caller_name, HRESULT result_code);
 
-    HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name);
-
     /* Breakpoints handling */
     void handle_coquery_return(const coquery_single_return_breakpoint& brk);
 

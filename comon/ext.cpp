@@ -173,36 +173,6 @@ extern "C" HRESULT CALLBACK cometa(IDebugClient * dbgclient, PCSTR args) {
     }
 }
 
-extern "C" HRESULT CALLBACK cobp(IDebugClient * dbgclient, PCSTR args) {
-    wil::com_ptr_t<IDebugControl4> dbgcontrol;
-    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
-
-    auto vargs{ split_args(args) };
-
-    if (vargs.size() < 3) {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
-        return E_INVALIDARG;
-    }
-
-    CLSID clsid;
-    RETURN_IF_FAILED(try_parse_guid(widen(vargs[0]), clsid));
-    IID iid;
-    RETURN_IF_FAILED(try_parse_guid(widen(vargs[1]), iid));
-
-    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
-        try {
-            DWORD method_num{ std::stoul(vargs[2]) };
-            return monitor->create_cobreakpoint(clsid, iid, method_num);
-        } catch (const std::invalid_argument&) {
-            // we will try with a method name
-            return monitor->create_cobreakpoint(clsid, iid, widen(vargs[2]));
-        }
-    } else {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
-        return E_FAIL;
-    }
-}
-
 extern "C" HRESULT CALLBACK cobl([[maybe_unused]] IDebugClient * dbgclient, [[maybe_unused]] PCSTR args) {
     wil::com_ptr_t<IDebugControl4> dbgcontrol;
     RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));

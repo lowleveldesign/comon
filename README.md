@@ -43,13 +43,6 @@ Check [**the documentation**](https://wtrace.net/documentation/comon) to learn m
       - shows the current monitoring status. It also lists all the virtual tables registered
         for a given process providing their IIDs and CLSIDs
 
-  !cobp <clsid> <iid> <method_name>
-      - creates a breakpoint on a method (identified by its name) in a given COM
-        interface (IID) in a given COM class (CLSID)
-  !cobp <clsid> <iid< <method_num>
-      - creates a breakpoint on a method (identified by its index) in a given COM
-        interface (IID) in a given COM class (CLSID)
-
   !coreg <clsid> <iid> <vtable_address>
       - manually add a virtual table address to the COM monitor and bind them with
         a given COM interface (IID) and COM class (CLSID)
