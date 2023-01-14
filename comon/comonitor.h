@@ -98,8 +98,10 @@ private:
         const std::optional<memory_protect> mem_protect;
     };
 
-    struct stats {
-        uint32_t query_count;
+    struct module_info {
+        std::wstring name;
+        ULONG timestamp;
+        ULONG size;
     };
 
     static wil::com_ptr_t<IDebugClient5> create_IDebugClient() {
@@ -120,7 +122,7 @@ private:
 
     const std::shared_ptr<cometa> _cometa;
 
-    const arch _arch;
+    const call_context _cc;
 
     const cofilter _filter;
 
@@ -130,7 +132,11 @@ private:
     std::unordered_map<ULONG64, ULONG> _breakpoint_addresses{};
     std::unordered_map<std::pair<CLSID, IID>, ULONG64> _cotype_with_vtables{};
 
-    HRESULT get_module_info(ULONG64 base_address, std::wstring& module_name, ULONG& module_timestamp, ULONG& module_size);
+    std::variant<module_info, HRESULT> get_module_info(ULONG64 base_address) const;
+
+    std::variant<ULONG64, HRESULT> get_exported_function_addr(ULONG64 module_base_addr, std::string_view function_name) const;
+
+    void try_adding_synthetic_symbols(const IID& iid, ULONG64 vtable_addr) const;
 
     auto is_clsid_allowed(const CLSID& clsid) {
         if (auto fltr = std::get_if<including_filter>(&_filter); fltr) {
@@ -158,8 +164,6 @@ private:
     void log_com_call_error(const CLSID& clsid, const IID& iid, std::wstring_view caller_name, HRESULT result_code);
 
     HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name);
-
-    std::variant<ULONG64, HRESULT> get_exported_function_addr(ULONG64 module_base_addr, std::string_view function_name) const;
 
     /* Breakpoints handling */
     void handle_coquery_return(const coquery_single_return_breakpoint& brk);

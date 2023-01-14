@@ -324,11 +324,11 @@ extern "C" HRESULT CALLBACK comon(IDebugClient * dbgclient, PCSTR args) {
             for (auto& [clsid, vtables] : monitor->list_cotypes()) {
                 auto clsid_name{ cometa.resolve_class_name(clsid) };
                 dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, 
-                    std::format(L"\n<col fg=\"srcannot\">- CLSID: <b>{:b} ({})</b></col>\n\n", clsid, clsid_name ? *clsid_name : L"N/A").c_str());
+                    std::format(L"\n<col fg=\"srcannot\">CLSID: <b>{:b} ({})</b></col>\n", clsid, clsid_name ? *clsid_name : L"N/A").c_str());
                 for (auto& [addr, iid] : vtables) {
                     auto iid_name{ cometa.resolve_type_name(iid) };
                     dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, 
-                        std::format(L"  - IID: <b>{:b} ({})</b>, address: {:#x}\n", iid, iid_name ? *iid_name : L"N/A", addr).c_str());
+                        std::format(L"  IID: <b>{:b} ({})</b>, address: {:#x}\n", iid, iid_name ? *iid_name : L"N/A", addr).c_str());
                 }
             }
         } else {

@@ -39,45 +39,6 @@ namespace fs = std::filesystem;
 
 namespace
 {
-
-arch get_process_arch(IDebugControl4* dbgcontrol, IDebugSymbols3* dbgsymbols, IDebugRegisters2* dbgregisters) {
-    auto init_arch_x86 = [dbgcontrol, dbgregisters](bool is_wow64) {
-        ULONG eax, esp;
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("eax", &eax));
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("esp", &esp));
-        return arch_x86{ IMAGE_FILE_MACHINE_I386, is_wow64, esp, eax };
-    };
-
-    auto init_arch_x64 = [dbgcontrol, dbgregisters]() {
-        ULONG rax, rsp, rcx, rdx, r8, r9;
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("rax", &rax));
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("rsp", &rsp));
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("rcx", &rcx));
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("rdx", &rdx));
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("r8", &r8));
-        THROW_IF_FAILED(dbgregisters->GetIndexByName("r9", &r9));
-
-        return arch_x64{ IMAGE_FILE_MACHINE_AMD64, rcx, rdx, r8, r9, rsp, rax };
-    };
-
-    ULONG effmach{};
-    THROW_IF_FAILED(dbgcontrol->GetEffectiveProcessorType(&effmach));
-
-    bool is_wow64{};
-    if (ULONG idx;
-        SUCCEEDED(dbgsymbols->GetModuleByModuleName2Wide(L"wow64", 0, DEBUG_GETMOD_NO_UNLOADED_MODULES, &idx, nullptr)) && idx >= 0) {
-        is_wow64 = true;
-    }
-
-    if (effmach == IMAGE_FILE_MACHINE_I386) {
-        return init_arch_x86(is_wow64);
-    } else if (effmach == IMAGE_FILE_MACHINE_AMD64) {
-        return is_wow64 ? arch{ init_arch_x86(true) } : arch{ init_arch_x64() };
-    } else {
-        throw std::invalid_argument{ "unsupported effective CPU architecture" };
-    }
-}
-
 HANDLE get_current_process_handle(IDebugSystemObjects* dbgsystemobjects) {
     ULONG64 handle;
     THROW_IF_FAILED(dbgsystemobjects->GetCurrentProcessHandle(&handle));
@@ -89,14 +50,13 @@ ULONG get_current_process_id(IDebugSystemObjects* dbgsystemobjects) {
     dbgsystemobjects->GetCurrentProcessId(&pid);
     return pid;
 }
-
 }
 
 comonitor::comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, const cofilter& filter)
     : _dbgclient{ dbgclient }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
     _dbgdataspaces{ _dbgclient.query<IDebugDataSpaces3>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
     _dbgregisters{ _dbgclient.query<IDebugRegisters2>() }, _cometa{ cometa }, _logger{ _dbgcontrol.get() },
-    _arch{ get_process_arch(_dbgcontrol.get(), _dbgsymbols.get(), _dbgregisters.get()) },
+    _cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _dbgsymbols.get() },
     _process_handle{ get_current_process_handle(_dbgsystemobjects.get()) }, _process_id{ get_current_process_id(_dbgsystemobjects.get()) },
     _filter{ filter } {
 
@@ -127,27 +87,22 @@ comonitor::~comonitor() {
     _cotype_with_vtables.clear();
 }
 
-HRESULT comonitor::get_module_info(ULONG64 base_address, std::wstring& module_name, ULONG& module_timestamp, ULONG& module_size) {
+std::variant<comonitor::module_info, HRESULT> comonitor::get_module_info(ULONG64 base_address) const {
     DEBUG_MODULE_PARAMETERS m{};
     RETURN_IF_FAILED(_dbgsymbols->GetModuleParameters(1, &base_address, DEBUG_ANY_ID /* ignored */, &m));
-
-    module_timestamp = m.TimeDateStamp;
-    module_size = m.Size;
 
     auto buffer{ std::make_unique<wchar_t[]>(m.ModuleNameSize) };
     RETURN_IF_FAILED(_dbgsymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE, DEBUG_ANY_ID, base_address, buffer.get(),
         m.ModuleNameSize, nullptr));
-    module_name.assign(buffer.get(), static_cast<size_t>(m.ModuleNameSize) - 1);
 
-    return S_OK;
+    return module_info{ std::wstring{ buffer.get(), static_cast<size_t>(m.ModuleNameSize) - 1 }, m.TimeDateStamp, m.Size };
 }
 
 HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, std::wstring_view method_display_name) {
     assert(method_num >= 0);
     if (auto vtable{ _cotype_with_vtables.find({ clsid, iid }) }; vtable != std::end(_cotype_with_vtables)) {
-        call_context cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch };
         ULONG64 addr{};
-        RETURN_IF_FAILED(cc.read_pointer(vtable->second + method_num * cc.get_pointer_size(), addr));
+        RETURN_IF_FAILED(_cc.read_pointer(vtable->second + method_num * _cc.get_pointer_size(), addr));
 
         IDebugBreakpoint2* brk{};
         RETURN_IF_FAILED(_dbgcontrol->AddBreakpoint2(DEBUG_BREAKPOINT_CODE, DEBUG_ANY_ID, &brk));
@@ -202,6 +157,35 @@ HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, std::
     }
 }
 
+void comonitor::try_adding_synthetic_symbols(const IID& iid, ULONG64 vtable_addr) const {
+    auto iid_name{ _cometa->resolve_type_name(iid) };
+
+    if (iid_name) {
+        // we will add synthetic symbols only if we have metadata
+        if (const auto methods{ _cometa->get_type_methods(iid) }; methods) {
+            std::vector<ULONG64> addresses(methods->size());
+            _dbgdataspaces->ReadPointersVirtual(static_cast<ULONG>(methods->size()), vtable_addr, addresses.data());
+
+            // if methods are available we may prepare synthetic symbols
+            for (size_t i = 0; i < methods->size(); i++) {
+                auto addr{ addresses[i] };
+                // but we don't want to override symbols if they already exist
+                if (_dbgsymbols->GetNameByOffsetWide(addr, nullptr, 0, nullptr, nullptr) == E_FAIL) {
+                    std::wstring method_name{ *iid_name + L"::" + (*methods)[i] };
+                    if (auto hr{ _dbgsymbols->AddSyntheticSymbolWide(addr, _cc.get_pointer_size(), method_name.c_str(),
+                        DEBUG_ADDSYNTHSYM_DEFAULT, nullptr) }; FAILED(hr) && hr != 0x800700b7) {
+                        // error 0x800700b7 (Cannot create a file when that file already exists) is OK as we just tried to set
+                        // a breakpoint on an existing symbol
+                        _logger.log_error(std::format(L"Failed to set a synthetic symbol: {} -> {:#x}", method_name, addr), hr);
+                    } else if (hr == S_OK) {
+                        _logger.log_info(std::format(L"Added a synthetic symbol: {} -> {:#x}", method_name, addr));
+                    }
+                }
+            }
+        }
+    }
+}
+
 HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr, bool save_in_database) {
     assert(is_clsid_allowed(clsid));
 
@@ -212,23 +196,20 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
         if (ULONG64 base_addr{}; save_in_database && SUCCEEDED(_dbgsymbols->GetModuleByOffset2(
             vtable_addr, 0, DEBUG_GETMOD_NO_UNLOADED_MODULES, nullptr, &base_addr))) {
 
-            std::wstring module_name;
-            ULONG module_size{}, module_timestamp{};
-            if (auto hr{ get_module_info(base_addr, module_name, module_timestamp, module_size) }; SUCCEEDED(hr)) {
-                _cometa->save_module_vtable({ module_name, module_timestamp, std::holds_alternative<arch_x64>(_arch) },
-                    { clsid, iid, vtable_addr - base_addr });
+            if (auto vmi{ get_module_info(base_addr) }; std::holds_alternative<module_info>(vmi)) {
+                const auto& mi{ std::get<module_info>(vmi) };
+                _cometa->save_module_vtable({ mi.name, mi.timestamp, _cc.is_64bit() }, { clsid, iid, vtable_addr - base_addr });
+                try_adding_synthetic_symbols(iid, vtable_addr);
             } else {
-                LOG_HR(hr);
+                LOG_HR(std::get<HRESULT>(vmi));
             }
         } else {
             _logger.log_warning(std::format(L"Virtual table address {:x} does not belong to any module.", vtable_addr));
         }
 
-        call_context cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch };
-
         // the first method is always the QueryInterface and we need to break on cv_it
         ULONG64 fn_address{};
-        RETURN_IF_FAILED(cc.read_pointer(vtable_addr, fn_address));
+        RETURN_IF_FAILED(_cc.read_pointer(vtable_addr, fn_address));
 
         if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{ clsid }, fn_address) }; FAILED(hr)) {
             _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
@@ -238,7 +219,7 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
 
         // special case for IClassFactory when we need to set breakpoint on the CreateInstance (4th method in the vtbl)
         if (iid == __uuidof(IClassFactory)) {
-            if (SUCCEEDED((cc.read_pointer(vtable_addr + 3 * cc.get_pointer_size(), fn_address)))) {
+            if (SUCCEEDED((_cc.read_pointer(vtable_addr + 3 * _cc.get_pointer_size(), fn_address)))) {
                 if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"CreateInstance" }, fn_address) }; FAILED(hr)) {
                     _logger.log_error(std::format(L"Failed to set a breakpoint on IClassFactory::CreateInstance method (CLSID: {:b})", clsid), hr);
                 }
@@ -287,7 +268,7 @@ std::variant<ULONG64, HRESULT> comonitor::get_exported_function_addr(ULONG64 mod
     IMAGE_EXPORT_DIRECTORY export_table;
     RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_data_directory.VirtualAddress, &export_table, sizeof export_table, nullptr));
 
-    ULONG function_name_buffer_len{ function_name.size() + 1 };
+    ULONG function_name_buffer_len{ static_cast<ULONG>(function_name.size()) + 1 };
     auto function_name_buffer{ std::make_unique<char[]>(function_name_buffer_len) };
     for (DWORD i = 0; i < export_table.NumberOfNames; i++)
     {
@@ -315,24 +296,25 @@ std::variant<ULONG64, HRESULT> comonitor::get_exported_function_addr(ULONG64 mod
 
 void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_timestamp, ULONG64 module_base_addr) {
     for (auto& [clsid, iid, vtable] :
-        _cometa->get_module_vtables({ module_name, module_timestamp, std::holds_alternative<arch_x64>(_arch) })) {
+        _cometa->get_module_vtables({ module_name, module_timestamp, _cc.is_64bit() })) {
         if (is_clsid_allowed(clsid)) {
-            call_context cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _arch };
-            if (ULONG64 fn_query_interface{}; SUCCEEDED(cc.read_pointer(module_base_addr + vtable, fn_query_interface))) {
+            auto vtable_addr{ module_base_addr + vtable };
+            if (ULONG64 fn_query_interface{}; SUCCEEDED(_cc.read_pointer(vtable_addr, fn_query_interface))) {
                 if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{ clsid }, fn_query_interface) }; FAILED(hr)) {
                     _logger.log_error(
                         std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
                 }
             }
+            try_adding_synthetic_symbols(iid, vtable_addr);
+            _cotype_with_vtables.insert({ { clsid, iid }, vtable_addr });
         }
-        _cotype_with_vtables.insert({ { clsid, iid }, module_base_addr + vtable });
     }
 
     // if a given module exports DllGetClassObject we will set a breakpoint on it
-    constexpr std::wstring_view functions_to_monitor[] {
+    constexpr std::wstring_view functions_to_monitor[]{
         L"DllGetClassObject", L"CoRegisterClassObject"
     };
-    constexpr std::string_view functions_to_monitor_ansi[] {
+    constexpr std::string_view functions_to_monitor_ansi[]{
         "DllGetClassObject", "CoRegisterClassObject"
     };
 
@@ -343,10 +325,8 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
     int index_limit = (module_name == L"ole32" || module_name == L"combase") ? _countof(functions_to_monitor) : 1;
 
     for (int i = 0; i < index_limit; i++) {
-        std::wstring fn_name{functions_to_monitor[i]};
+        std::wstring fn_name{ functions_to_monitor[i] };
         std::wstring fn_fullname{ module_name };
-        // when there is a dot in the module name, windbg replaces it with underscore
-        std::replace(std::begin(fn_fullname), std::end(fn_fullname), L'.', L'_');
         fn_fullname.append(L"!").append(fn_name);
 
         if (auto fn_addr{ get_exported_function_addr(module_base_addr, functions_to_monitor_ansi[i]) }; std::holds_alternative<ULONG64>(fn_addr)) {
@@ -358,14 +338,12 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
 }
 
 void comonitor::handle_module_unload(ULONG64 base_address) {
-    std::wstring module_name;
-    ULONG module_size{}, module_timestamp{};
-
-    if (auto hr{ get_module_info(base_address, module_name, module_timestamp, module_size) }; SUCCEEDED(hr)) {
+    if (auto vmi{ get_module_info(base_address) }; std::holds_alternative<module_info>(vmi)) {
+        const auto& mi{ std::get<module_info>(vmi) };
         // remove all function name breakpoints from the specified module
         for (auto iter{ std::begin(_cotype_with_vtables) }; iter != std::end(_cotype_with_vtables);) {
             auto& [key, vtlb] {*iter};
-            if (vtlb >= base_address && vtlb <= base_address + module_size) {
+            if (vtlb >= base_address && vtlb <= base_address + mi.size) {
                 iter = _cotype_with_vtables.erase(iter);
             } else {
                 iter++;
@@ -374,9 +352,9 @@ void comonitor::handle_module_unload(ULONG64 base_address) {
 
         for (auto iter{ std::begin(_breakpoints) }; iter != std::end(_breakpoints);) {
             auto address{ iter->second.addr };
-            if (address >= base_address && address <= base_address + module_size) {
-                if (auto hr2{ unset_breakpoint(iter) }; FAILED(hr2)) {
-                    _logger.log_error(std::format(L"Failed to remove a breakpoint {}", iter->first), hr2);
+            if (address >= base_address && address <= base_address + mi.size) {
+                if (auto hr{ unset_breakpoint(iter) }; FAILED(hr)) {
+                    _logger.log_error(std::format(L"Failed to remove a breakpoint {}", iter->first), hr);
                     iter++;
                 }
             } else {
@@ -384,39 +362,35 @@ void comonitor::handle_module_unload(ULONG64 base_address) {
             }
         }
     } else {
-        LOG_HR(hr);
+        LOG_HR(std::get<HRESULT>(vmi));
     }
 }
 
 void comonitor::log_com_call_success(const CLSID& clsid, const IID& iid, std::wstring_view caller_name) {
-    if (is_clsid_allowed(clsid)) {
-        ULONG tid{};
-        _dbgsystemobjects->GetCurrentThreadId(&tid);
+    ULONG tid{};
+    _dbgsystemobjects->GetCurrentThreadId(&tid);
 
-        auto clsid_name{ _cometa->resolve_class_name(clsid) };
-        auto iid_name{ _cometa->resolve_type_name(iid) };
-        _logger.log_info_dml(std::format(L"<col fg=\"normfg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
-            L"({})</b></col> -> <col fg=\"srccmnt\">SUCCESS (0x0)</col>",
-            _process_id, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
-            iid_name ? *iid_name : L"N/A"));
-    }
+    auto clsid_name{ _cometa->resolve_class_name(clsid) };
+    auto iid_name{ _cometa->resolve_type_name(iid) };
+    _logger.log_info_dml(std::format(L"<col fg=\"normfg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
+        L"({})</b></col> -> <col fg=\"srccmnt\">SUCCESS (0x0)</col>",
+        _process_id, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
+        iid_name ? *iid_name : L"N/A"));
 }
 
 void comonitor::log_com_call_error(const CLSID& clsid, const IID& iid, std::wstring_view caller_name, HRESULT result_code) {
-    if (is_clsid_allowed(clsid)) {
-        ULONG pid{};
-        _dbgsystemobjects->GetCurrentProcessId(&pid);
-        ULONG tid{};
-        _dbgsystemobjects->GetCurrentThreadId(&tid);
+    ULONG pid{};
+    _dbgsystemobjects->GetCurrentProcessId(&pid);
+    ULONG tid{};
+    _dbgsystemobjects->GetCurrentThreadId(&tid);
 
-        auto clsid_name{ _cometa->resolve_class_name(clsid) };
-        auto iid_name = _cometa->resolve_type_name(iid);
-        _logger.log_info_dml(std::format(L"<col fg=\"changed\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
-            L"({})</b></col> -> <col fg=\"srcstr\">ERROR ({:#x}) - {}</col>",
-            pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
-            iid_name ? *iid_name : L"N/A", static_cast<unsigned long>(result_code),
-            dbgeng_logger::get_error_msg(result_code)));
-    }
+    auto clsid_name{ _cometa->resolve_class_name(clsid) };
+    auto iid_name = _cometa->resolve_type_name(iid);
+    _logger.log_info_dml(std::format(L"<col fg=\"changed\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
+        L"({})</b></col> -> <col fg=\"srcstr\">ERROR ({:#x}) - {}</col>",
+        pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
+        iid_name ? *iid_name : L"N/A", static_cast<unsigned long>(result_code),
+        dbgeng_logger::get_error_msg(result_code)));
 }
 
 std::unordered_map<CLSID, std::vector<std::pair<ULONG64, IID>>> comonitor::list_cotypes() const {
