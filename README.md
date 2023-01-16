@@ -55,6 +55,6 @@ Comon is built with CMake, using [vcpkg](https://vcpkg.io) as a package manager.
 You may use one of the CMake presets to build a specific configuration, for example:
 
 ```
-cmake --preset=ninja-x64
+cmake --preset=ninja-x64-release
 cmake --build --preset=ninja-x64-release
 ```
