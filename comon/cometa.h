@@ -99,6 +99,11 @@ public:
     explicit cometa(IDebugControl4* dbgcontrol, const fs::path& db_path): _logger{ dbgcontrol },
         _db{ fs::exists(db_path) ? open_db(db_path, dbgcontrol) : init_db(db_path, dbgcontrol) } { }
 
+    void invalidate_cache() {
+        _cotype_cache.clear();
+        _coclass_cache.clear();
+    }
+
     HRESULT index();
 
     HRESULT index(std::wstring_view tlb_path) {
@@ -109,6 +114,9 @@ public:
 
         if (auto hr{ index_tlb(tlb_path) }; SUCCEEDED(hr)) {
             _logger.log_info_dml(std::format(L"'{}' : <col fg=\"srccmnt\">PARSED</col>", tlb_path));
+
+            invalidate_cache();
+
             return S_OK;
         } else {
             _logger.log_error_dml(std::format(L"'{}'", tlb_path), hr);

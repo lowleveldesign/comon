@@ -566,6 +566,9 @@ HRESULT cometa::index() {
                 insert_cotype({ iid, std::get<std::wstring>(v), cotype_type::Interface, __uuidof(IUnknown), false });
             }
         }
+
+        invalidate_cache();
+
         return S_OK;
     };
 

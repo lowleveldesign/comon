@@ -58,6 +58,11 @@ public:
     const O& get(const K& key);
 
     void insert(const K& key, const O& data);
+
+    void clear() {
+        _cache_freqs.clear();
+        _cache.clear();
+    }
 };
 
 template<typename K, typename O>
