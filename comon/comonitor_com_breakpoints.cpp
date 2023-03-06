@@ -1,4 +1,3 @@
-
 /*
    Copyright 2022 Sebastian Solnica
 
@@ -37,33 +36,28 @@ using namespace comon_ext;
 namespace views = std::ranges::views;
 namespace fs = std::filesystem;
 
-std::vector<std::tuple<ULONG, std::wstring, ULONG64>> comonitor::list_breakpoints() const {
-    std::vector<std::tuple<ULONG, std::wstring, ULONG64>> result{};
+HRESULT comonitor::set_breakpoint(const breakpoint& brk, ULONG64 address, [[maybe_unused]] PULONG id) {
 
-    for (const auto& [brk_id, brk_data] : _breakpoints) {
-        auto& [brk, addr, _] = brk_data;
+    auto get_breakpoint_command = [this, &brk]() {
         if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
             auto& fbrk{ std::get<coquery_single_return_breakpoint>(brk) };
-            result.push_back({ brk_id, std::format(L"return breakpoint (CLSID: {:b}, IID: {:b})", fbrk.clsid, fbrk.iid), addr });
+            return std::format(L"* [comon] return breakpoint (CLSID: {:b}, IID: {:b})", fbrk.clsid, fbrk.iid);
+        } else if (std::holds_alternative<coregister_return_breakpoint>(brk)) {
+            auto& crbrk{ std::get<coregister_return_breakpoint>(brk) };
+            return std::format(L"* [comon] register return breakpoint (CLSID: {:b}, IID: {:b}, function: {})",
+                crbrk.clsid, crbrk.iid, crbrk.register_function_name);
         } else if (std::holds_alternative<function_breakpoint>(brk)) {
             auto& fbrk{ std::get<function_breakpoint>(brk) };
-            result.push_back({ brk_id, std::format(L"function breakpoint (name: {})", fbrk.function_name), addr });
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            auto& qibrk{ std::get<IUnknown_QueryInterface_breakpoint>(brk) };
-            result.push_back({ brk_id, std::format(L"IUnknown::QueryInterface breakpoint (CLSID: {:b})", qibrk.clsid), addr });
+            return std::format(L"* [comon] function breakpoint (name: {})", fbrk.function_name);
         } else if (std::holds_alternative<cointerface_method_breakpoint>(brk)) {
             auto& cmbrk{ std::get<cointerface_method_breakpoint>(brk) };
-            result.push_back({ brk_id, std::format(L"interface breakpoint (CLSID: {:b}, IID: {:b}, method: {})",
-                cmbrk.clsid, cmbrk.iid, cmbrk.method_name), addr });
+            return std::format(L"* [comon] interface breakpoint (CLSID: {:b}, IID: {:b}, method: {})",
+                cmbrk.clsid, cmbrk.iid, cmbrk.method_name);
         } else {
             assert(false);
+            return std::wstring{};
         }
-    }
-
-    return result;
-}
-
-HRESULT comonitor::set_breakpoint(const breakpoint& brk, ULONG64 address, [[maybe_unused]] PULONG id) {
+    };
 
     ULONG brk_id{};
 
@@ -100,10 +94,10 @@ HRESULT comonitor::set_breakpoint(const breakpoint& brk, ULONG64 address, [[mayb
         }
 
         RETURN_IF_FAILED(dbgbrk->SetOffset(address));
+        dbgbrk->SetCommandWide(get_breakpoint_command().c_str());
 
         RETURN_IF_FAILED(dbgbrk->GetId(&brk_id));
-        RETURN_IF_FAILED(dbgbrk->AddFlags(DEBUG_BREAKPOINT_ENABLED | DEBUG_BREAKPOINT_ADDER_ONLY |
-            (is_onetime_breakpoint(brk) ? DEBUG_BREAKPOINT_ONE_SHOT : 0)));
+        RETURN_IF_FAILED(dbgbrk->AddFlags(DEBUG_BREAKPOINT_ENABLED | (is_onetime_breakpoint(brk) ? DEBUG_BREAKPOINT_ONE_SHOT : 0)));
 
         _breakpoints.insert({ brk_id, { brk, address, memprotect } });
         _breakpoint_addresses.insert({ address, brk_id });
@@ -115,12 +109,9 @@ HRESULT comonitor::set_breakpoint(const breakpoint& brk, ULONG64 address, [[mayb
     return S_OK;
 }
 
-HRESULT comonitor::unset_breakpoint(decltype(_breakpoints)::iterator& iter) {
-    IDebugBreakpoint2* bp;
-    RETURN_IF_FAILED(_dbgcontrol->GetBreakpointById2(iter->first, &bp));
-    RETURN_IF_FAILED(_dbgcontrol->RemoveBreakpoint2(bp));
-
+void comonitor::unset_inner_breakpoint(decltype(_breakpoints)::iterator& iter) {
     auto address{ iter->second.addr };
+
     if (auto& mp{ iter->second.mem_protect }; mp) {
         if (MEMORY_BASIC_INFORMATION meminfo{}; ::VirtualQueryEx(_process_handle, reinterpret_cast<LPCVOID>(address), &meminfo, sizeof(meminfo)) != 0) {
             // we will revert the memory protection only if it equals the protection we set previously
@@ -136,8 +127,20 @@ HRESULT comonitor::unset_breakpoint(decltype(_breakpoints)::iterator& iter) {
 
     _breakpoint_addresses.erase(address);
     iter = _breakpoints.erase(iter);
+}
 
-    return S_OK;
+HRESULT comonitor::unset_breakpoint(decltype(_breakpoints)::iterator& iter) {
+    auto brk_id{ iter->first };
+
+    // the order of operations is important here as dbgsession will get notification about the breakpoint removal
+    // and will try to re-remove it from the monitor again
+    unset_inner_breakpoint(iter);
+
+    if (IDebugBreakpoint2* bp{}; SUCCEEDED(_dbgcontrol->GetBreakpointById2(brk_id, &bp))) {
+        return _dbgcontrol->RemoveBreakpoint2(bp);
+    } else {
+        return S_OK;
+    }
 }
 
 HRESULT comonitor::modify_breakpoint_flag(ULONG brk_id, ULONG flag, bool enable) {
@@ -165,11 +168,11 @@ bool comonitor::handle_breakpoint(ULONG id) {
             } else {
                 assert(false);
             }
-        } else if (std::holds_alternative<IUnknown_QueryInterface_breakpoint>(brk)) {
-            handle_IUnknown_QueryInterface(std::get<IUnknown_QueryInterface_breakpoint>(brk));
         } else if (std::holds_alternative<cointerface_method_breakpoint>(brk)) {
             auto& cmbrk{ std::get<cointerface_method_breakpoint>(brk) };
-            if (cmbrk.iid == __uuidof(IClassFactory) && cmbrk.method_name == L"CreateInstance") {
+            if (cmbrk.method_name == L"QueryInterface") {
+                handle_IUnknown_QueryInterface(cmbrk.clsid);
+            } else if (cmbrk.iid == __uuidof(IClassFactory) && cmbrk.method_name == L"CreateInstance") {
                 handle_IClassFactory_CreateInstance(cmbrk.clsid);
             } else {
                 assert(false);
@@ -195,14 +198,12 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint& br
     if (SUCCEEDED(function_return_code)) {
         log_com_call_success(brk.clsid, brk.iid, brk.create_function_name);
 
-        if (!_cotype_with_vtables.contains({ brk.clsid, brk.iid })) {
-            ULONG64 object_addr{};
-            RETURN_VOID_IF_FAILED(_cc.read_pointer(brk.object_address_address, object_addr));
-            ULONG64 vtbl_addr{};
-            RETURN_VOID_IF_FAILED(_cc.read_pointer(object_addr, vtbl_addr));
+        ULONG64 object_addr{};
+        RETURN_VOID_IF_FAILED(_cc.read_pointer(brk.object_address_address, object_addr));
+        ULONG64 vtbl_addr{};
+        RETURN_VOID_IF_FAILED(_cc.read_pointer(object_addr, vtbl_addr));
 
-            register_vtable(brk.clsid, brk.iid, vtbl_addr, true);
-        }
+        register_vtable(brk.clsid, brk.iid, vtbl_addr, true, false);
     } else {
         log_com_call_error(brk.clsid, {}, brk.create_function_name, function_return_code);
     }
@@ -213,7 +214,7 @@ void comonitor::handle_coregister_return(const coregister_return_breakpoint& brk
     RETURN_VOID_IF_FAILED(_cc.read_method_return_code(function_return_code));
 
     if (SUCCEEDED(function_return_code)) {
-        register_vtable(brk.clsid, brk.iid, brk.vtbl_address, true);
+        register_vtable(brk.clsid, brk.iid, brk.vtbl_address, true, false);
         log_com_call_success(brk.clsid, brk.iid, brk.register_function_name);
     } else {
         log_com_call_error(brk.clsid, {}, brk.register_function_name, function_return_code);
@@ -262,7 +263,7 @@ void comonitor::handle_CoRegisterClassObject(const function_breakpoint& brk) {
     }
 }
 
-void comonitor::handle_IUnknown_QueryInterface(const IUnknown_QueryInterface_breakpoint& brk) {
+void comonitor::handle_IUnknown_QueryInterface(const CLSID& clsid) {
     static const std::wstring_view function_name{ L"IUnknown::QueryInterface" };
 
     std::vector<ULONG64> args(3);
@@ -272,9 +273,9 @@ void comonitor::handle_IUnknown_QueryInterface(const IUnknown_QueryInterface_bre
     IID iid{};
     RETURN_VOID_IF_FAILED(_cc.read_object(args[1], &iid, sizeof iid));
 
-    if (!_cotype_with_vtables.contains({ brk.clsid, iid })) {
+    if (!_cotype_with_vtables.contains({ clsid, iid })) {
         // we assume here that if previous calls were successful, this one should be as well so no need to wait for the query return
-        if (auto hr{ set_breakpoint(coquery_single_return_breakpoint{ brk.clsid, iid, args[2], function_name.data() }, return_addr) }; FAILED(hr)) {
+        if (auto hr{ set_breakpoint(coquery_single_return_breakpoint{ clsid, iid, args[2], function_name.data() }, return_addr) }; FAILED(hr)) {
             _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", function_name), hr);
         }
     }

@@ -66,9 +66,12 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient * dbgclient, [[maybe_unused]] PC
       - shows the current monitoring status. It also lists all the virtual tables registered
         for a given process providing their IIDs and CLSIDs
 
-  !coreg <clsid> <iid> <vtable_address>
+  !coreg [--force] [--nosave] <clsid> <iid> <vtable_address>
       - manually add a virtual table address to the COM monitor and bind them with
-        a given COM interface (IID) and COM class (CLSID)
+        a given COM interface (IID) and COM class (CLSID). If the --force option is
+        provided, the virtual table will be added even if it's already registered. If
+        the --nosave option is provided, the virtual table will not be saved to the
+        cometa.db3 file.
 ==============================================================
 )");
 

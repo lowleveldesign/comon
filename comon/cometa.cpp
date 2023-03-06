@@ -39,181 +39,18 @@
 using namespace comon_ext;
 
 namespace ranges = std::ranges;
-namespace views = std::ranges::views;
 namespace fs = std::filesystem;
 
 /* *** COM METADATA *** */
 
 // increment whenever the database schema changes
-static const int schema_version{ 4 };
-
-class version
-{
-    std::array<int32_t, 4> _version_nums{};
-
-public:
-    version(const std::wstring& version): _version{ version } {
-        std::wistringstream wss{ version };
-        std::wstring token{};
-
-        for (size_t i = 0; i < _version_nums.size(); i++) {
-            std::getline(wss, token, L'.');
-            if (!wss.good()) {
-                break;
-            }
-            _version_nums[i] = std::stoi(token, nullptr, 16);
-        }
-    }
-
-    [[nodiscard]] bool operator==(const version& rhs) const {
-        return std::lexicographical_compare_three_way(_version_nums.cbegin(), _version_nums.cend(),
-            rhs._version_nums.cbegin(), rhs._version_nums.cend()) == std::strong_ordering::equal;
-    }
-
-    std::strong_ordering operator<=>(const version& rhs) const {
-        return std::lexicographical_compare_three_way(_version_nums.cbegin(), _version_nums.cend(),
-            rhs._version_nums.cbegin(), rhs._version_nums.cend());
-    }
-
-    std::wstring _version;
-};
-
-namespace registry
-{
-std::vector<std::wstring> get_child_key_names(HKEY parent_hkey) {
-    std::vector<std::wstring> key_names{};
-
-    std::array<wchar_t, 256> key_name{};
-    for (DWORD i = 0; ; i++) {
-        auto len{ static_cast<DWORD>(key_name.size()) };
-        auto enum_result{ ::RegEnumKeyEx(parent_hkey, i, key_name.data(), &len, nullptr, nullptr, nullptr, nullptr) };
-        if (enum_result == ERROR_NO_MORE_ITEMS) {
-            break;
-        }
-        assert(enum_result != ERROR_MORE_DATA);
-        if (enum_result != NO_ERROR) {
-            LOG_WIN32(enum_result);
-            break;
-        }
-
-        key_names.push_back(std::wstring{ key_name.data(), len });
-    }
-
-    return key_names;
-}
-
-std::variant<std::wstring, HRESULT> read_text_value(HKEY hkey, const wchar_t* subkey, const wchar_t* value_name) {
-    DWORD len = 1024;
-    auto buffer{ std::make_unique<wchar_t[]>(len) };
-
-    auto win32err{ ::RegGetValue(hkey, subkey, value_name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, buffer.get(), &len) };
-    if (win32err == ERROR_MORE_DATA) {
-        buffer = std::make_unique<wchar_t[]>(len);
-        win32err = ::RegGetValue(hkey, subkey, value_name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, nullptr, buffer.get(), &len);
-    }
-
-    RETURN_IF_WIN32_ERROR(win32err);
-
-    return std::wstring{ buffer.get() };
-}
-}
-
-namespace typelib
-{
-using typeattr_t = std::unique_ptr<TYPEATTR, std::function<void(TYPEATTR*)>>;
-using funcdesc_t = std::unique_ptr<FUNCDESC, std::function<void(FUNCDESC*)>>;
-
-std::variant<typelib_info, HRESULT> get_tlbinfo(HKEY typelib_hkey) {
-    std::vector<version> versions{};
-    ranges::transform(registry::get_child_key_names(typelib_hkey), std::back_inserter(versions),
-        [](const std::wstring& v) { return version{ v }; });
-
-    auto latest_version{ ranges::max_element(versions) };
-    if (latest_version != std::end(versions)) {
-        wil::unique_hkey latest_version_hkey{};
-        RETURN_IF_WIN32_ERROR(::RegOpenKeyEx(typelib_hkey, latest_version->_version.c_str(), 0, KEY_READ, latest_version_hkey.put()));
-        auto name_kv{ registry::read_text_value(latest_version_hkey.get(), nullptr, nullptr) };
-        if (std::holds_alternative<HRESULT>(name_kv)) {
-            return std::get<HRESULT>(name_kv);
-        }
-
-#if _WIN32
-        auto path_kv{ registry::read_text_value(latest_version_hkey.get(), L"0\\win32", nullptr) };
-#else
-        auto path_kv{ registry::read_text_value(latest_version_hkey.get(), L"0\\win64", nullptr) };
-#endif
-
-        if (std::holds_alternative<HRESULT>(path_kv)) {
-            return std::get<HRESULT>(path_kv);
-        }
-
-        return typelib_info{ std::get<std::wstring>(name_kv), latest_version->_version, std::get<std::wstring>(path_kv) };
-    }
-
-    return E_INVALIDARG;
-}
-
-std::variant<typeattr_t, HRESULT> get_typeinfo_attr(ITypeInfo* typeinfo) {
-    auto typeattr_deleter = [typeinfo](TYPEATTR* ta) { typeinfo->ReleaseTypeAttr(ta); };
-
-    TYPEATTR* p_typeattr;
-    RETURN_IF_FAILED(typeinfo->GetTypeAttr(&p_typeattr));
-
-    return typeattr_t{ p_typeattr, typeattr_deleter };
-}
-
-std::variant<GUID, HRESULT> get_type_parent_iid(ITypeInfo* typeinfo, WORD parent_type_cnt) {
-    if (parent_type_cnt == 0) {
-        // special case for the IUnknown interface
-        return __uuidof(IUnknown);
-    }
-    assert(parent_type_cnt == 1);
-    HREFTYPE href = NULL;
-    RETURN_IF_FAILED(typeinfo->GetRefTypeOfImplType(0, &href));
-
-    wil::com_ptr_t<ITypeInfo> parent_ti{};
-    RETURN_IF_FAILED(typeinfo->GetRefTypeInfo(href, parent_ti.put()));
-
-    auto attr_res{ get_typeinfo_attr(parent_ti.get()) };
-    if (std::holds_alternative<HRESULT>(attr_res)) {
-        return std::get<HRESULT>(attr_res);
-    }
-    return std::get<typeattr_t>(attr_res)->guid;
-};
-
-std::variant<std::vector<std::wstring>, HRESULT> get_type_methods(ITypeInfo* typeinfo, TYPEATTR* typeattr) {
-    auto funcdesc_deleter = [typeinfo](FUNCDESC* fd) { typeinfo->ReleaseFuncDesc(fd); };
-
-    std::vector<std::wstring> methods{};
-    for (int j = 0; j < typeattr->cFuncs; j++) {
-        FUNCDESC* p_fd;
-        RETURN_IF_FAILED(typeinfo->GetFuncDesc(j, &p_fd));
-
-        wil::unique_bstr raw_name{};
-        funcdesc_t fd{ p_fd, funcdesc_deleter };
-        RETURN_IF_FAILED(typeinfo->GetDocumentation(fd->memid, raw_name.put(), nullptr, nullptr, nullptr));
-
-        std::wstring name{ raw_name.get() };
-        if (fd->invkind & INVOKE_PROPERTYPUTREF) {
-            name.insert(0, L"putref_");
-        } else if (fd->invkind & INVOKE_PROPERTYPUT) {
-            name.insert(0, L"put_");
-        } else if (fd->invkind & INVOKE_PROPERTYGET) {
-            name.insert(0, L"get_");
-        }
-
-        methods.push_back(name);
-    }
-
-    return methods;
-}
-}
+constexpr int schema_version{ 5 };
 
 std::unique_ptr<SQLite::Database> cometa::init_db(const fs::path& path, IDebugControl4* dbgcontrol) {
     dbgeng_logger log{ dbgcontrol };
 
     if (path.empty()) {
-        log.log_info(L"Could not open the metadata database from the dafault location. Switching to a temporary database.");
+        log.log_info(L"Could not open the metadata database from the dafault location. Switching to a temporary in-memory database.");
     } else {
         log.log_info(std::format(L"Creating a new metadata database at '{}'.", path.c_str()));
     }
@@ -221,7 +58,7 @@ std::unique_ptr<SQLite::Database> cometa::init_db(const fs::path& path, IDebugCo
     auto db{ std::make_unique<SQLite::Database>(to_utf8(path.c_str()), SQLite::OPEN_CREATE | SQLite::OPEN_READWRITE) };
 
     db->exec(R"(create table schema_version (version integer not null);)");
-    db->exec(std::format("insert into schema_version values({})", schema_version));
+    db->exec(std::format("insert into schema_version (version) values({})", schema_version));
 
     db->exec(R"(create table cotypes (
 iid blob primary key, 
@@ -234,32 +71,34 @@ methods_available int not null) without rowid)");
 iid blob not null,
 ordinal integer not null,
 name text not null,
+callconv integer not null,
+dispid integer null,
+return_type text not null,
 primary key (iid, ordinal)) without rowid)");
+
+    db->exec(R"(create table cotype_method_args (
+iid blob not null,
+method_ordinal integer not null,
+name text not null,
+ordinal integer not null,
+type text not null,
+flags int not null,
+primary key (iid, method_ordinal, ordinal)) without rowid)");
 
     db->exec(R"(create table coclasses (
 clsid blob primary key, 
 name text not null
 ) without rowid)");
 
-    db->exec(R"(create table modules (
-id integer not null,
-name text not null,
-timestamp integer not null,
-bitness integer not null,
-primary key (id),
-unique (name, timestamp)))");
-
     db->exec(R"(create table vtables (
-module_id integer not null,
 clsid blob not null, 
 iid blob not null,
+module_name text not null,
+module_timestamp integer not null,
 vtable integer not null,
-primary key (module_id, clsid, iid),
-foreign key (module_id) references modules (id))
-without rowid;
+primary key (clsid, iid)) without rowid;
 create index IX_vtables_iid on vtables (iid);
-create index IX_vtables_clsid on vtables (clsid);
-)");
+create index IX_vtables_module_name on vtables (module_name))");
 
     return db;
 }
@@ -271,9 +110,69 @@ std::unique_ptr<SQLite::Database> cometa::open_db(const fs::path& path, IDebugCo
     auto db{ std::make_unique<SQLite::Database>(to_utf8(path.c_str()), SQLite::OPEN_READWRITE) };
     if (SQLite::Statement query{ *db, "select version from schema_version" };
         !query.executeStep() || query.getColumn("version").getInt() != schema_version) {
+        log.log_error(L"Incorrect version of the schema detected.", E_FAIL);
         throw std::invalid_argument{ "incorrect database schema" };
     }
     return db;
+}
+
+
+cometa::cometa(IDebugControl4* dbgcontrol, bool is_wow64, const fs::path& db_path, bool create_new):
+    _logger{ dbgcontrol }, _is_wow64{ is_wow64 },
+    _db{ create_new ? init_db(db_path, dbgcontrol) : open_db(db_path, dbgcontrol) } {
+
+    if (create_new) {
+        fill_known_iids();
+    }
+}
+
+void cometa::fill_known_iids() {
+    // we insert all fundamental COM types here to make sure that they are always available
+
+    SQLite::Transaction transaction{ *_db };
+
+    // IUnknown
+    insert_cotype(cotype{ __uuidof(IUnknown), L"IUnknown", cotype_kind::Interface, {}, true });
+
+    insert_cotype_method(comethod{ __uuidof(IUnknown), L"QueryInterface", 0, CC_STDCALL, std::nullopt, L"HRESULT" });
+    insert_cotype_method_arg(__uuidof(IUnknown), 0, comethod_arg{ L"riid", L"REFIID", IDLFLAG_FIN }, 0);
+    insert_cotype_method_arg(__uuidof(IUnknown), 0, comethod_arg{ L"ppvObject", L"void**", IDLFLAG_FOUT }, 1);
+
+    insert_cotype_method(comethod{ __uuidof(IUnknown), L"AddRef", 1, CC_STDCALL, std::nullopt, L"ULONG" });
+
+    insert_cotype_method(comethod{ __uuidof(IUnknown), L"Release", 2, CC_STDCALL, std::nullopt, L"ULONG" });
+
+    // IDispatch
+    insert_cotype(cotype{ __uuidof(IDispatch), L"IDispatch", cotype_kind::Interface, __uuidof(IUnknown), true });
+
+    insert_cotype_method(comethod{ __uuidof(IDispatch), L"GetTypeInfoCount", 0, CC_STDCALL, std::nullopt, L"HRESULT" });
+    insert_cotype_method_arg(__uuidof(IDispatch), 0, comethod_arg{ L"pctinfo", L"UINT*", IDLFLAG_FOUT }, 0);
+
+    insert_cotype_method(comethod{ __uuidof(IDispatch), L"GetTypeInfo", 1, CC_STDCALL, std::nullopt, L"HRESULT" });
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, comethod_arg{ L"iTInfo", L"UINT", IDLFLAG_FIN }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, comethod_arg{ L"lcid", L"LCID", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, comethod_arg{ L"ppTInfo", L"ITypeInfo**", IDLFLAG_FOUT }, 2);
+
+    insert_cotype_method(comethod{ __uuidof(IDispatch), L"GetIDsOfNames", 2, CC_STDCALL, std::nullopt, L"HRESULT" });
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"riid", L"REFIID", IDLFLAG_FIN }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"rgszNames", L"LPOLESTR*", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"cNames", L"UINT", IDLFLAG_FIN }, 2);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"lcid", L"LCID", IDLFLAG_FIN }, 3);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"rgDispId", L"DISPID*", IDLFLAG_FOUT }, 4);
+
+    insert_cotype_method(comethod{ __uuidof(IDispatch), L"Invoke", 3, CC_STDCALL, std::nullopt, L"HRESULT" });
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"dispIdMember", L"DISPID", IDLFLAG_FIN }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"riid", L"REFIID", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"lcid", L"LCID", IDLFLAG_FIN }, 2);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"wFlags", L"WORD", IDLFLAG_FIN }, 3);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pDispParams", L"DISPPARAMS*", IDLFLAG_FIN }, 4);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pVarResult", L"VARIANT*", IDLFLAG_FOUT }, 5);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pExcepInfo", L"EXCEPINFO*", IDLFLAG_FOUT }, 6);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"puArgErr", L"UINT*", IDLFLAG_FOUT }, 7);
+
+    transaction.commit();
+
+    _known_iids.insert_range(std::array<IID, 2> { __uuidof(IUnknown), __uuidof(IDispatch) });
 }
 
 bool cometa::is_valid_db(const fs::path& path) {
@@ -287,54 +186,90 @@ bool cometa::is_valid_db(const fs::path& path) {
 }
 
 void cometa::insert_cotype(const cotype& typedesc) {
-    assert(_db);
-    auto u8name{ to_utf8(typedesc.name) };
+    if (_known_iids.contains(typedesc.iid)) {
+        return;
+    }
 
-    SQLite::Statement stmt{ *_db, "insert or ignore into cotypes values (:iid, :type, :name, :parent_iid, :methods_available)" };
+    assert(_db);
+    auto name_u8{ to_utf8(typedesc.name) };
+
+    SQLite::Statement stmt{ *_db, R"(insert or replace into cotypes (iid, type, name, parent_iid, methods_available) 
+    values (:iid, :type, :name, :parent_iid, :methods_available))" };
     stmt.bindNoCopy(":iid", &typedesc.iid, sizeof(GUID));
     stmt.bind(":type", static_cast<int>(typedesc.type));
-    stmt.bindNoCopy(":name", u8name);
+    stmt.bindNoCopy(":name", name_u8);
     stmt.bindNoCopy(":parent_iid", &typedesc.parent_iid, sizeof(GUID));
     stmt.bind(":methods_available", static_cast<int>(typedesc.methods_available));
 
     stmt.exec();
 }
 
-void cometa::insert_cotype_methods(const GUID& iid, std::vector<std::wstring>methods) {
-    assert(_db);
-    for (int ordinal = 0; ordinal < static_cast<int>(methods.size()); ordinal++) {
-        auto u8mname{ to_utf8(methods[ordinal]) };
-
-        SQLite::Statement stmt{ *_db, "insert or ignore into cotype_methods values (:iid, :ordinal, :name)" };
-        stmt.bindNoCopy(":iid", &iid, sizeof(GUID));
-        stmt.bind(":ordinal", ordinal);
-        stmt.bindNoCopy(":name", u8mname);
-
-        stmt.exec();
+void cometa::insert_cotype_method(const comethod& method) {
+    if (_known_iids.contains(method.iid)) {
+        return;
     }
+
+    assert(_db);
+
+    auto name_u8{ to_utf8(method.name) };
+    auto return_type_u8{ to_utf8(method.return_type) };
+
+    SQLite::Statement stmt{ *_db, R"(insert or replace into cotype_methods (iid, ordinal, name, dispid, callconv, return_type)
+    values (:iid, :ordinal, :name, :dispid, :callconv, :return_type))" };
+    stmt.bindNoCopy(":iid", &method.iid, sizeof(GUID));
+    stmt.bind(":ordinal", method.ordinal);
+    stmt.bindNoCopy(":name", name_u8);
+    if (method.dispid) {
+        stmt.bind(":dispid", static_cast<int>(*method.dispid));
+    } else {
+        stmt.bind(":dispid");
+    }
+    stmt.bind(":callconv", static_cast<int>(method.callconv));
+    stmt.bindNoCopy(":return_type", return_type_u8);
+
+    stmt.exec();
+}
+
+void cometa::insert_cotype_method_arg(const GUID& iid, int method_ordinal, const comethod_arg& arg, int arg_ordinal) {
+    if (_known_iids.contains(iid)) {
+        return;
+    }
+
+    assert(_db);
+
+    auto name_u8{ to_utf8(arg.name) };
+    auto type_u8{ to_utf8(arg.type) };
+
+    SQLite::Statement stmt{ *_db, R"(insert or replace into cotype_method_args (iid, method_ordinal, ordinal, name, type, flags)
+    values (:iid, :method_ordinal, :ordinal, :name, :type, :flags))" };
+    stmt.bindNoCopy(":iid", &iid, sizeof(GUID));
+    stmt.bind(":method_ordinal", method_ordinal);
+    stmt.bind(":ordinal", arg_ordinal);
+    stmt.bindNoCopy(":name", name_u8);
+    stmt.bindNoCopy(":type", type_u8);
+    stmt.bind(":flags", arg.flags);
+
+    stmt.exec();
 }
 
 void cometa::insert_coclass(const coclass& classdesc) {
     assert(_db);
-    auto u8name{ to_utf8(classdesc.name) };
+    auto name_u8{ to_utf8(classdesc.name) };
 
-    SQLite::Statement stmt{ *_db, "insert or ignore into coclasses values (:clsid, :name)" };
+    SQLite::Statement stmt{ *_db, "insert or replace into coclasses (clsid, name) values (:clsid, :name)" };
     stmt.bindNoCopy(":clsid", &classdesc.clsid, sizeof(GUID));
-    stmt.bindNoCopy(":name", u8name);
+    stmt.bindNoCopy(":name", name_u8);
 
     stmt.exec();
 }
 
 std::vector<covtable> cometa::get_module_vtables(const comodule& comodule) {
     assert(_db);
-    auto u8_module_name{ to_utf8(comodule.name) };
-
+    auto module_name_u8{ to_utf8(comodule.name) };
     SQLite::Statement query{ *_db,
-R"(select clsid,iid,vtable from vtables where module_id in (
-    select id from modules where name = :module_name and timestamp = :module_timestamp and bitness = :bitness))" };
-    query.bindNoCopy(":module_name", u8_module_name);
+        "select clsid,iid,vtable from vtables where module_name = :module_name and module_timestamp = :module_timestamp" };
+    query.bindNoCopy(":module_name", module_name_u8);
     query.bind(":module_timestamp", static_cast<const uint32_t>(comodule.timestamp));
-    query.bind(":bitness", comodule.is_64bit ? 64 : 32);
 
     std::vector<covtable> vtables{};
     while (query.executeStep()) {
@@ -349,57 +284,22 @@ R"(select clsid,iid,vtable from vtables where module_id in (
 
 void cometa::save_module_vtable(const comodule& comodule, const covtable& covtable) {
     assert(_db);
-    auto u8_module_name{ to_utf8(comodule.name) };
+    auto module_name_u8{ to_utf8(comodule.name) };
 
-    auto get_module_id = [this, &u8_module_name, &comodule]() -> std::optional<int64_t> {
-        SQLite::Statement query{ *_db,
-            "select id from modules where name = :name and timestamp = :timestamp and bitness = :bitness" };
-        query.bindNoCopy(":name", u8_module_name);
-        query.bind(":timestamp", static_cast<const uint32_t>(comodule.timestamp));
-        query.bind(":bitness", comodule.is_64bit ? 64 : 32);
+    SQLite::Statement query{ *_db, R"(insert or replace into vtables (clsid, iid, module_name, module_timestamp, vtable) 
+        values (:clsid, :iid, :module_name, :module_timestamp, :vtable))" };
 
-        if (query.executeStep()) {
-            return query.getColumn("id").getInt64();
-        } else {
-            return std::nullopt;
-        }
-    };
+    query.bindNoCopy(":clsid", &covtable.clsid, sizeof(GUID));
+    query.bindNoCopy(":iid", &covtable.iid, sizeof(GUID));
+    query.bindNoCopy(":module_name", module_name_u8);
+    query.bind(":module_timestamp", static_cast<const uint32_t>(comodule.timestamp));
+    query.bind(":vtable", static_cast<long long>(covtable.address));
 
-    auto save_module = [this, &u8_module_name, &comodule]() -> std::optional<int64_t> {
-        SQLite::Statement query{ *_db, "insert into modules (name, timestamp, bitness) values (:name, :timestamp, :bitness)" };
-        query.bindNoCopy(":name", u8_module_name);
-        query.bind(":timestamp", static_cast<const uint32_t>(comodule.timestamp));
-        query.bind(":bitness", comodule.is_64bit ? 64 : 32);
-
-        if (query.exec() == 1) {
-            // module_id is just an alias for rowid
-            return _db->getLastInsertRowid();
-        } else {
-            return std::nullopt;
-        }
-    };
-
-    auto save_vtable = [this, &covtable](long long module_id) {
-        SQLite::Statement query{ *_db,
-            "insert or ignore into vtables values (:module_id, :clsid, :iid, :vtable)" };
-        query.bind(":module_id", module_id);
-        query.bindNoCopy(":clsid", &covtable.clsid, sizeof(GUID));
-        query.bindNoCopy(":iid", &covtable.iid, sizeof(GUID));
-        query.bind(":vtable", static_cast<long long>(covtable.address));
-
-        query.exec();
-    };
-
-    if (auto module_id{ get_module_id() }; module_id) {
-        save_vtable(*module_id);
-    } else if ((module_id = save_module())) {
-        save_vtable(*module_id);
-    } else {
-        _logger.log_error(std::format(L"Error when saving module data: '{}'", comodule.name), E_FAIL);
-    }
+    query.exec();
 }
 
 HRESULT cometa::index_tlb(std::wstring_view tlb_path) {
+    using namespace std::literals;
     assert(_db);
 
     wil::com_ptr_t<ITypeLib> typelib{};
@@ -422,24 +322,94 @@ HRESULT cometa::index_tlb(std::wstring_view tlb_path) {
         switch (typeattr->typekind) {
         case TKIND_INTERFACE:
         case TKIND_DISPATCH: {
-            auto type{ typeattr->typekind == TKIND_INTERFACE ? cotype_type::Interface : cotype_type::DispInterface };
+            auto kind{ typeattr->typekind == TKIND_INTERFACE ? cotype_kind::Interface : cotype_kind::DispInterface };
 
-            auto parent_iid_v{ typelib::get_type_parent_iid(typeinfo.get(), typeattr->cImplTypes) };
+            auto get_type_name = [typeinfo, kind](const TYPEDESC* tdesc) {
+                auto return_type_v{ typelib::get_type_desc(typeinfo.get(), tdesc) };
+                return std::holds_alternative<std::wstring>(return_type_v) ? std::get<std::wstring>(return_type_v) :
+                    std::wstring{ typelib::bad_type_name };
+            };
+
+            auto parent_iid_v{ typelib::get_type_parent_iid(typeinfo.get(), kind, typeattr->cImplTypes) };
             if (std::holds_alternative<HRESULT>(parent_iid_v)) {
                 return std::get<HRESULT>(parent_iid_v);
             }
             auto& parent_iid{ std::get<GUID>(parent_iid_v) };
 
-            if (auto methods_v{ typelib::get_type_methods(typeinfo.get(), typeattr.get()) }; std::holds_alternative<HRESULT>(methods_v)) {
-                insert_cotype({ typeattr->guid, name.get(), type, parent_iid, false });
-            } else {
-                SQLite::Transaction transaction{ *_db };
+            auto funcdesc_deleter = [typeinfo](FUNCDESC* fd) { typeinfo->ReleaseFuncDesc(fd); };
 
-                insert_cotype({ typeattr->guid, name.get(), type, parent_iid, true });
-                insert_cotype_methods(typeattr->guid, std::get<std::vector<std::wstring>>(methods_v));
+            SQLite::Transaction transaction{ *_db };
 
-                transaction.commit();
+            insert_cotype({ typeattr->guid, name.get(), kind, parent_iid, true });
+
+            // TODO: typeattr->cVars for properties in dispinterfaces
+
+            for (int ordinal = 0; ordinal < typeattr->cFuncs; ) {
+                FUNCDESC* p_fd;
+                RETURN_IF_FAILED(typeinfo->GetFuncDesc(ordinal, &p_fd));
+                typelib::funcdesc_t fd{ p_fd, funcdesc_deleter };
+
+                if (auto names_v{ typelib::get_comethod_names(typeinfo.get(), fd.get()) }; std::holds_alternative<HRESULT>(names_v)) {
+                    return std::get<HRESULT>(names_v);
+                } else {
+                    auto& names = std::get<std::vector<wil::unique_bstr>>(names_v);
+                    assert(names.size() > 0);
+
+                    if (ordinal == 0 && names[0].get() == L"QueryInterface"sv) {
+                        // skip IUnknown
+                        ordinal += 3;
+                        continue;
+                    }
+                    if ((ordinal == 0 || ordinal == 3) && names[0].get() == L"GetTypeInfoCount"sv) {
+                        // skip IDispatch
+                        ordinal += 4;
+                        continue;
+                    }
+
+                    std::wstring method_name{ names[0].get() };
+                    if (fd->invkind & INVOKE_PROPERTYPUTREF) {
+                        method_name.insert(0, L"putref_");
+                    } else if (fd->invkind & INVOKE_PROPERTYPUT) {
+                        method_name.insert(0, L"put_");
+                    } else if (fd->invkind & INVOKE_PROPERTYGET) {
+                        method_name.insert(0, L"get_");
+                    }
+                    std::optional<DISPID> dispid = kind == cotype_kind::DispInterface ? std::make_optional(fd->memid) : std::nullopt;
+
+                    assert((SHORT)names.size() == fd->cParams + 1);
+                    for (int arg_ordinal = 0; arg_ordinal < fd->cParams; arg_ordinal++) {
+                        auto elem_desc{ fd->lprgelemdescParam + arg_ordinal };
+                        comethod_arg arg{
+                            std::wstring { names[arg_ordinal + 1].get()},
+                            get_type_name(&elem_desc->tdesc),
+                            elem_desc->idldesc.wIDLFlags
+                        };
+                        insert_cotype_method_arg(typeattr->guid, ordinal, arg, arg_ordinal);
+                    }
+
+                    auto result_vt{ fd->elemdescFunc.tdesc.vt & 0xFFF };
+                    if (kind == cotype_kind::DispInterface && result_vt != VT_HRESULT && result_vt != VT_VOID) {
+                        // the return value is passed as an out parameter
+                        TYPEDESC tdesc{ .lptdesc = &fd->elemdescFunc.tdesc, .vt = VT_PTR };
+                        comethod_arg arg{
+                            std::wstring { L"result" },
+                            get_type_name(&tdesc),
+                            IDLFLAG_FOUT | IDLFLAG_FRETVAL
+                        };
+                        insert_cotype_method_arg(typeattr->guid, ordinal, arg, fd->cParams);
+
+                        insert_cotype_method({ typeattr->guid, method_name, ordinal, fd->callconv, dispid, typelib::vt_to_string(VT_HRESULT) });
+                    } else {
+                        insert_cotype_method({ typeattr->guid, method_name, ordinal, fd->callconv, dispid, get_type_name(&fd->elemdescFunc.tdesc) });
+                    }
+
+                    // TODO: I'm still missing handling of the optional parameters
+
+                    ordinal += 1;
+                }
             }
+
+            transaction.commit();
             break;
         }
         case TKIND_COCLASS: {
@@ -561,9 +531,9 @@ HRESULT cometa::index() {
             }
 
             if (auto v{ registry::read_text_value(iid_hkey.get(), nullptr, nullptr) }; std::holds_alternative<HRESULT>(v)) {
-                insert_cotype({ iid, L"", cotype_type::Interface, __uuidof(IUnknown), false });
+                insert_cotype({ iid, L"", cotype_kind::Interface, __uuidof(IUnknown), false });
             } else {
-                insert_cotype({ iid, std::get<std::wstring>(v), cotype_type::Interface, __uuidof(IUnknown), false });
+                insert_cotype({ iid, std::get<std::wstring>(v), cotype_kind::Interface, __uuidof(IUnknown), false });
             }
         }
 
@@ -572,25 +542,16 @@ HRESULT cometa::index() {
         return S_OK;
     };
 
-    RETURN_IF_FAILED(index_typelibs());
-
-#if _WIN64
     // index 32-bit nodes first before indexing 64-bit
-    RETURN_IF_FAILED(index_coclasses(true));
-    RETURN_IF_FAILED(index_interfaces(true));
-#endif
+    RETURN_IF_FAILED(index_coclasses(_is_wow64));
+    RETURN_IF_FAILED(index_interfaces(_is_wow64));
 
-    RETURN_IF_FAILED(index_coclasses());
-    RETURN_IF_FAILED(index_interfaces());
+    RETURN_IF_FAILED(index_typelibs());
 
     return S_OK;
 }
 
 std::optional<cotype> cometa::resolve_type(const IID& iid) {
-    if (iid == __uuidof(IUnknown)) {
-        return cotype{ __uuidof(IUnknown), L"IUnknown", cotype_type::Interface, __uuidof(IUnknown) };
-    }
-
     if (_cotype_cache.contains(iid)) {
         return _cotype_cache.get(iid);
     }
@@ -600,33 +561,37 @@ std::optional<cotype> cometa::resolve_type(const IID& iid) {
     query.bindNoCopy(":iid", &iid, sizeof(IID));
 
     auto result{ !query.executeStep() ? std::nullopt :
-        std::make_optional(cotype { iid, from_utf8(query.getColumn("name").getText()),
-            static_cast<cotype_type>(query.getColumn("type").getInt()),
+        std::make_optional(cotype{ iid, from_utf8(query.getColumn("name").getText()),
+            static_cast<cotype_kind>(query.getColumn("type").getInt()),
             *(reinterpret_cast<const GUID*>(query.getColumn("parent_iid").getBlob())),
-            static_cast<bool>(query.getColumn("methods_available").getInt())}) };
+            static_cast<bool>(query.getColumn("methods_available").getInt()) }) };
     _cotype_cache.insert(iid, result);
 
     return result;
 }
 
 std::optional<method_collection> cometa::get_type_methods(const IID& iid) {
-    if (iid == __uuidof(IUnknown)) {
-        return method_collection{ L"QueryInterface", L"AddRef", L"Release" };
-    }
-
     assert(_db);
     auto query_methods = [this](const IID& iid) {
-        SQLite::Statement method_query{ *_db, "select name from cotype_methods where iid = :iid order by ordinal" };
+        SQLite::Statement method_query{ *_db, "select * from cotype_methods where iid = :iid order by ordinal" };
         method_query.bindNoCopy(":iid", &iid, sizeof(IID));
         method_collection methods{};
         while (method_query.executeStep()) {
-            methods.push_back(from_utf8(method_query.getColumn(0).getText()));
+            auto dispid_column{ method_query.getColumn("dispid") };
+
+            methods.push_back({
+                .iid = iid,
+                .name = from_utf8(method_query.getColumn("name").getText()),
+                .ordinal = method_query.getColumn("ordinal").getInt(),
+                .callconv = static_cast<CALLCONV>(method_query.getColumn("callconv").getInt()),
+                .dispid = !dispid_column.isNull() ? std::optional<DISPID>{ dispid_column.getInt() } : std::nullopt,
+                .return_type = from_utf8(method_query.getColumn("return_type").getText()) });
         }
         return methods;
     };
 
     if (auto type{ resolve_type(iid) }; type && type->methods_available) {
-        if (auto methods{ query_methods(iid) }; methods.size() == 0 || methods.at(0) != L"QueryInterface") {
+        if (auto methods{ query_methods(iid) }; methods.size() == 0 || methods.at(0).name != L"QueryInterface") {
             // The initial methods must be from the IUnknown interface. We will try to resolve the parent type...
             if (auto parent_methods{ get_type_methods(type->parent_iid) }; parent_methods) {
                 std::ranges::copy(std::crbegin(*parent_methods), std::crend(*parent_methods), std::front_inserter(methods));
@@ -640,6 +605,26 @@ std::optional<method_collection> cometa::get_type_methods(const IID& iid) {
         }
     }
     return std::nullopt;
+}
+
+std::optional<method_arg_collection> cometa::get_type_method_args(const comethod& method) {
+    assert(_db);
+    if (auto type{ resolve_type(method.iid) }; type && type->methods_available) {
+        SQLite::Statement arg_query{ *_db, "select * from cotype_method_args where iid = :iid and method_ordinal = :method_ordinal order by ordinal" };
+        arg_query.bindNoCopy(":iid", &method.iid, sizeof(IID));
+        arg_query.bind(":method_ordinal", method.ordinal);
+
+        method_arg_collection args{};
+        while (arg_query.executeStep()) {
+            args.push_back({
+                .name = from_utf8(arg_query.getColumn("name").getText()),
+                .type = from_utf8(arg_query.getColumn("type").getText()),
+                .flags = static_cast<USHORT>(arg_query.getColumn("flags").getUInt()) });
+        }
+        return args;
+    } else {
+        return std::nullopt;
+    }
 }
 
 std::optional<coclass> cometa::resolve_class(const CLSID& clsid) {
@@ -656,36 +641,30 @@ std::optional<coclass> cometa::resolve_class(const CLSID& clsid) {
     return result;
 }
 
-std::vector<std::tuple<std::wstring, CLSID, bool, ULONG64>> cometa::find_vtables_by_iid(const IID& iid) {
-    SQLite::Statement query{ *_db,
-R"(select m.name,m.bitness,v.clsid,v.vtable from vtables v
-    inner join modules m on m.id = v.module_id where v.iid = :iid)" };
+std::vector<std::tuple<std::wstring, CLSID, ULONG64>> cometa::find_vtables_by_iid(const IID& iid) {
+    SQLite::Statement query{ *_db, "select module_name,clsid,vtable from vtables where iid = :iid" };
     query.bindNoCopy(":iid", &iid, sizeof(IID));
 
-    std::vector<std::tuple<std::wstring, CLSID, bool, ULONG64>> vtables{};
+    std::vector<std::tuple<std::wstring, CLSID, ULONG64>> vtables{};
     while (query.executeStep()) {
         vtables.push_back({
-            from_utf8(query.getColumn("name").getString()),
+            from_utf8(query.getColumn("module_name").getString()),
             *(reinterpret_cast<const GUID*>(query.getColumn("clsid").getBlob())),
-            query.getColumn("bitness").getInt() == 64 ? true : false,
             query.getColumn("vtable").getInt64()
             });
     }
     return vtables;
 }
 
-std::vector<std::tuple<std::wstring, IID, bool, ULONG64>> cometa::find_vtables_by_clsid(const CLSID& clsid) {
-    SQLite::Statement query{ *_db,
-R"(select m.name,m.bitness,v.iid,v.vtable from vtables v
-    inner join modules m on m.id = v.module_id where v.clsid = :clsid)" };
+std::vector<std::tuple<std::wstring, IID, ULONG64>> cometa::find_vtables_by_clsid(const CLSID& clsid) {
+    SQLite::Statement query{ *_db, "select module_name,iid,vtable from vtables_{} where clsid = :clsid" };
     query.bindNoCopy(":clsid", &clsid, sizeof(CLSID));
 
-    std::vector<std::tuple<std::wstring, IID, bool, ULONG64>> vtables{};
+    std::vector<std::tuple<std::wstring, IID, ULONG64>> vtables{};
     while (query.executeStep()) {
         vtables.push_back({
-            from_utf8(query.getColumn("name").getString()),
+            from_utf8(query.getColumn("module_name").getString()),
             *(reinterpret_cast<const GUID*>(query.getColumn("iid").getBlob())),
-            query.getColumn("bitness").getInt() == 64 ? true : false,
             query.getColumn("vtable").getInt64()
             });
     }

@@ -27,8 +27,10 @@ namespace fs = std::filesystem;
 static const std::wstring_view combase_module_name{ L"combase" };
 
 dbgsession::dbgsession()
-    : _dbgclient{ create_IDebugClient() }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
-    _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() }, _cometa{ std::make_shared<cometa>(_dbgcontrol.get(), get_cometa_db_path()) } {
+    : _dbgclient{ create_IDebugClient() }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() },
+    _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
+    _cc{ _dbgcontrol.get(), _dbgclient.query<IDebugDataSpaces3>().get(), _dbgclient.query<IDebugRegisters2>().get(), _dbgsymbols.get() },
+    _cometa{ create_cometa(_dbgcontrol.get(), _cc) } {
 
     THROW_IF_FAILED(_dbgclient->GetEventCallbacksWide(_prev_callback.put()));
     THROW_IF_FAILED(_dbgclient->SetEventCallbacksWide(this));
@@ -39,6 +41,19 @@ HRESULT dbgsession::Breakpoint(PDEBUG_BREAKPOINT2 bp) {
     if (SUCCEEDED(bp->GetId(&id))) {
         if (auto monitor{ _monitors.find(get_active_process_id()) }; monitor != std::end(_monitors)) {
             return monitor->second.handle_breakpoint(id) ? DEBUG_STATUS_GO : DEBUG_STATUS_NO_CHANGE;
+        }
+    }
+    return DEBUG_STATUS_NO_CHANGE;
+}
+
+STDMETHODIMP_(HRESULT __stdcall) comon_ext::dbgsession::ChangeEngineState(ULONG flags, ULONG64 argument)
+{
+    if (flags == DEBUG_CES_BREAKPOINTS) {
+        int brk_id = static_cast<ULONG>(argument);
+        if (wil::com_ptr_t<IDebugBreakpoint2> breakpoint{}; FAILED(_dbgcontrol->GetBreakpointById2(brk_id, breakpoint.put()))) {
+            for (auto& monitor : _monitors) {
+                monitor.second.handle_breakpoint_removed(brk_id);
+            }
         }
     }
     return DEBUG_STATUS_NO_CHANGE;

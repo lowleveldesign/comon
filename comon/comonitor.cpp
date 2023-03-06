@@ -52,13 +52,17 @@ ULONG get_current_process_id(IDebugSystemObjects* dbgsystemobjects) {
 }
 }
 
-comonitor::comonitor(IDebugClient5* dbgclient, std::shared_ptr<cometa> cometa, const cofilter& filter)
+comonitor::comonitor(IDebugClient5* dbgclient, cometa& cometa, const call_context& cc, const cofilter& filter)
     : _dbgclient{ dbgclient }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
     _dbgdataspaces{ _dbgclient.query<IDebugDataSpaces3>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
-    _dbgregisters{ _dbgclient.query<IDebugRegisters2>() }, _cometa{ cometa }, _logger{ _dbgcontrol.get() },
-    _cc{ _dbgcontrol.get(), _dbgdataspaces.get(), _dbgregisters.get(), _dbgsymbols.get() },
+    _cometa{ cometa }, _logger{ _dbgcontrol.get() }, _cc{ cc },
     _process_handle{ get_current_process_handle(_dbgsystemobjects.get()) }, _process_id{ get_current_process_id(_dbgsystemobjects.get()) },
     _filter{ filter } {
+
+    // FIXME only temporarily
+    ULONG dbgclass, qualifier;
+    _dbgcontrol->GetDebuggeeType(&dbgclass, &qualifier);
+    _logger.log_info(std::format(L"class = {:#x}, qualified = {:#x}", dbgclass, qualifier));
 
     if (ULONG loaded_modules_cnt, unloaded_modules_cnt;
         SUCCEEDED(_dbgsymbols->GetNumberModules(&loaded_modules_cnt, &unloaded_modules_cnt))) {
@@ -98,61 +102,65 @@ std::variant<comonitor::module_info, HRESULT> comonitor::get_module_info(ULONG64
     return module_info{ std::wstring{ buffer.get(), static_cast<size_t>(m.ModuleNameSize) - 1 }, m.TimeDateStamp, m.Size };
 }
 
-void comonitor::try_adding_synthetic_symbols(const IID& iid, ULONG64 vtable_addr) const {
-    auto iid_name{ _cometa->resolve_type_name(iid) };
+HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr, bool save_in_database, bool replace_if_exists) {
+    assert(is_clsid_allowed(clsid));
 
-    if (iid_name) {
-        // we will add synthetic symbols only if we have metadata
-        if (const auto methods{ _cometa->get_type_methods(iid) }; methods) {
-            std::vector<ULONG64> addresses(methods->size());
-            _dbgdataspaces->ReadPointersVirtual(static_cast<ULONG>(methods->size()), vtable_addr, addresses.data());
+    auto is_breakpoint_for_interface = [&clsid, &iid](const auto& brk) {
+        if (std::holds_alternative<cointerface_method_breakpoint>(brk)) {
+            auto& cmbrk{ std::get<cointerface_method_breakpoint>(brk) };
+            return cmbrk.clsid == clsid && cmbrk.iid == iid;
+        } else if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
+            auto& csbrk{ std::get<coquery_single_return_breakpoint>(brk) };
+            return csbrk.clsid == clsid && csbrk.iid == iid;
+        } else if (std::holds_alternative<coregister_return_breakpoint>(brk)) {
+            auto& crbrk{ std::get<coregister_return_breakpoint>(brk) };
+            return crbrk.clsid == clsid && crbrk.iid == iid;
+        } else {
+            assert(std::holds_alternative<function_breakpoint>(brk));
+            return false;
+        }
+    };
 
-            // if methods are available we may prepare synthetic symbols
-            for (size_t i = 0; i < methods->size(); i++) {
-                auto addr{ addresses[i] };
-                // but we don't want to override symbols if they already exist
-                if (_dbgsymbols->GetNameByOffsetWide(addr, nullptr, 0, nullptr, nullptr) == E_FAIL) {
-                    std::wstring method_name{ *iid_name + L"::" + (*methods)[i] };
-                    if (auto hr{ _dbgsymbols->AddSyntheticSymbolWide(addr, _cc.get_pointer_size(), method_name.c_str(),
-                        DEBUG_ADDSYNTHSYM_DEFAULT, nullptr) }; FAILED(hr) && hr != 0x800700b7) {
-                        // error 0x800700b7 (Cannot create a file when that file already exists) is OK as we just tried to set
-                        // a breakpoint on an existing symbol
-                        _logger.log_error(std::format(L"Failed to set a synthetic symbol: {} -> {:#x}", method_name, addr), hr);
-                    } else if (hr == S_OK) {
-                        _logger.log_info(std::format(L"Added a synthetic symbol: {} -> {:#x}", method_name, addr));
+    if (auto iter{ _cotype_with_vtables.find({ clsid, iid }) }; iter != std::end(_cotype_with_vtables) && iter->second != vtable_addr && !replace_if_exists) {
+        _logger.log_warning(std::format(L"Vtable for CLSID {:b} and IID {:b} is already registered at {:#x} (new proposed address is {:#x}).",
+            clsid, iid, iter->second, vtable_addr));
+    } else if (iter == std::end(_cotype_with_vtables) || iter->second != vtable_addr) {
+        if (iter != std::end(_cotype_with_vtables)) {
+            assert(replace_if_exists);
+            _cotype_with_vtables.erase(iter);
+
+            for (auto brk_iter{ std::begin(_breakpoints) }; brk_iter != std::end(_breakpoints);) {
+                if (is_breakpoint_for_interface(brk_iter->second.brk)) {
+                    if (auto hr{ unset_breakpoint(brk_iter) }; FAILED(hr)) {
+                        _logger.log_error(std::format(L"Failed to unset breakpoint {}", brk_iter->first), hr);
+                        brk_iter++;
                     }
+                } else {
+                    ++brk_iter;
                 }
             }
         }
-    }
-}
-
-HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr, bool save_in_database) {
-    assert(is_clsid_allowed(clsid));
-
-    // the vtable might have been already added by the IClassFactory_CreateInstance method
-    if (!_cotype_with_vtables.contains({ clsid, iid })) {
 
         // save info about vtable in the database
-        if (ULONG64 base_addr{}; save_in_database && SUCCEEDED(_dbgsymbols->GetModuleByOffset2(
-            vtable_addr, 0, DEBUG_GETMOD_NO_UNLOADED_MODULES, nullptr, &base_addr))) {
-
-            if (auto vmi{ get_module_info(base_addr) }; std::holds_alternative<module_info>(vmi)) {
-                const auto& mi{ std::get<module_info>(vmi) };
-                _cometa->save_module_vtable({ mi.name, mi.timestamp, _cc.is_64bit() }, { clsid, iid, vtable_addr - base_addr });
-                try_adding_synthetic_symbols(iid, vtable_addr);
+        if (save_in_database) {
+            if (ULONG64 base_addr{}; SUCCEEDED(_dbgsymbols->GetModuleByOffset2(
+                vtable_addr, 0, DEBUG_GETMOD_NO_UNLOADED_MODULES, nullptr, &base_addr))) {
+                if (auto vmi{ get_module_info(base_addr) }; std::holds_alternative<module_info>(vmi)) {
+                    const auto& mi{ std::get<module_info>(vmi) };
+                    _cometa.save_module_vtable({ mi.name, mi.timestamp, _cc.is_64bit() }, { clsid, iid, vtable_addr - base_addr });
+                } else {
+                    LOG_HR(std::get<HRESULT>(vmi));
+                }
             } else {
-                LOG_HR(std::get<HRESULT>(vmi));
+                _logger.log_warning(std::format(L"Virtual table address {:x} does not belong to any module.", vtable_addr));
             }
-        } else {
-            _logger.log_warning(std::format(L"Virtual table address {:x} does not belong to any module.", vtable_addr));
         }
 
         // the first method is always the QueryInterface and we need to break on cv_it
         ULONG64 fn_address{};
         RETURN_IF_FAILED(_cc.read_pointer(vtable_addr, fn_address));
 
-        if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{ clsid }, fn_address) }; FAILED(hr)) {
+        if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"QueryInterface" }, fn_address) }; FAILED(hr)) {
             _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
         }
 
@@ -166,10 +174,6 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
                 }
             }
         }
-    } else {
-        // a given vtable could be used by a different pair <CLSID, IID>,
-        // so we always update the cotypes vtables map
-        _cotype_with_vtables[{clsid, iid}] = vtable_addr;
     }
 
     return S_OK;
@@ -237,16 +241,15 @@ std::variant<ULONG64, HRESULT> comonitor::get_exported_function_addr(ULONG64 mod
 
 void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_timestamp, ULONG64 module_base_addr) {
     for (auto& [clsid, iid, vtable] :
-        _cometa->get_module_vtables({ module_name, module_timestamp, _cc.is_64bit() })) {
+        _cometa.get_module_vtables({ module_name, module_timestamp, _cc.is_64bit() })) {
         if (is_clsid_allowed(clsid)) {
             auto vtable_addr{ module_base_addr + vtable };
             if (ULONG64 fn_query_interface{}; SUCCEEDED(_cc.read_pointer(vtable_addr, fn_query_interface))) {
-                if (auto hr{ set_breakpoint(IUnknown_QueryInterface_breakpoint{ clsid }, fn_query_interface) }; FAILED(hr)) {
+                if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"QueryInterface" }, fn_query_interface) }; FAILED(hr)) {
                     _logger.log_error(
                         std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
                 }
             }
-            try_adding_synthetic_symbols(iid, vtable_addr);
             _cotype_with_vtables.insert({ { clsid, iid }, vtable_addr });
         }
     }
@@ -270,6 +273,7 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
         std::wstring fn_fullname{ module_name };
         fn_fullname.append(L"!").append(fn_name);
 
+        // FIXME: I need to use different function if the target is TTD and do nothing if it's dump
         if (auto fn_addr{ get_exported_function_addr(module_base_addr, functions_to_monitor_ansi[i]) }; std::holds_alternative<ULONG64>(fn_addr)) {
             if (auto hr{ set_breakpoint(function_breakpoint{ fn_fullname }, std::get<ULONG64>(fn_addr)) }; FAILED(hr)) {
                 _logger.log_error(std::format(L"Failed to set a breakpoint on function '{}'", fn_fullname), hr);
@@ -311,8 +315,8 @@ void comonitor::log_com_call_success(const CLSID& clsid, const IID& iid, std::ws
     ULONG tid{};
     _dbgsystemobjects->GetCurrentThreadId(&tid);
 
-    auto clsid_name{ _cometa->resolve_class_name(clsid) };
-    auto iid_name{ _cometa->resolve_type_name(iid) };
+    auto clsid_name{ _cometa.resolve_class_name(clsid) };
+    auto iid_name{ _cometa.resolve_type_name(iid) };
     _logger.log_info_dml(std::format(L"<col fg=\"normfg\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
         L"({})</b></col> -> <col fg=\"srccmnt\">SUCCESS (0x0)</col>",
         _process_id, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,
@@ -325,8 +329,8 @@ void comonitor::log_com_call_error(const CLSID& clsid, const IID& iid, std::wstr
     ULONG tid{};
     _dbgsystemobjects->GetCurrentThreadId(&tid);
 
-    auto clsid_name{ _cometa->resolve_class_name(clsid) };
-    auto iid_name = _cometa->resolve_type_name(iid);
+    auto clsid_name{ _cometa.resolve_class_name(clsid) };
+    auto iid_name = _cometa.resolve_type_name(iid);
     _logger.log_info_dml(std::format(L"<col fg=\"changed\">{}:{:03} [{}] CLSID: <b>{:b} ({})</b>, IID: <b>{:b} "
         L"({})</b></col> -> <col fg=\"srcstr\">ERROR ({:#x}) - {}</col>",
         pid, tid, caller_name, clsid, clsid_name ? *clsid_name : L"N/A", iid,

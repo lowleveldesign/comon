@@ -139,7 +139,7 @@ public:
         if (!error_messages.contains(hr)) {
             wchar_t error_msg[256];
             auto cnt{ ::FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
-                            hr, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), error_msg, ARRAYSIZE(error_msg), nullptr) };
+                hr, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), error_msg, ARRAYSIZE(error_msg), nullptr) };
             if (cnt == 0) {
                 return L"";
             }

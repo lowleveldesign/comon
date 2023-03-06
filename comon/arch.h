@@ -2,6 +2,7 @@
 #pragma once
 
 #include <variant>
+#include <vector>
 
 #include <Windows.h>
 #include <DbgEng.h>
@@ -84,6 +85,14 @@ public:
     }
 
     bool is_64bit() const noexcept { return _pointer_size == 8; }
+
+    bool is_wow64() const noexcept {
+        if (std::holds_alternative<arch_x86>(_arch)) {
+            return std::get<arch_x86>(_arch).is_wow64;
+        } else {
+            return false;
+        }
+    }
 };
 
 }

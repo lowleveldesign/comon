@@ -9,9 +9,24 @@ configure_file(resource.h resource.h COPYONLY)
 configure_file(resource.rc.in resource.rc @ONLY)
 
 add_library(comon
-	"cometa.cpp" "comonitor.cpp" "comonitor_com_breakpoints.cpp" "ext.cpp" "ext.def" "helpers.cpp"
-	"cohelp.cpp" "dbgsession.cpp" "${CMAKE_CURRENT_BINARY_DIR}/resource.rc" "arch.cpp"
-	"comon.h" "lfu_cache.h" "cometa.h" "comonitor.h" "dbgsession.h" "arch.h")
+	"cometa.h"
+	"cometa.cpp"
+	"cometa_helpers.cpp"
+	"comon.h"
+	"comonitor.h"
+	"comonitor.cpp"
+	"comonitor_com_breakpoints.cpp"
+	"ext.cpp"
+	"ext.def"
+	"helpers.cpp"
+	"cohelp.cpp"
+	"dbgsession.h" 
+	"dbgsession.cpp"
+	"${CMAKE_CURRENT_BINARY_DIR}/resource.rc"
+	"arch.h"
+	"arch.cpp"
+	"lfu_cache.h"
+)
 
 set_property(TARGET comon PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
@@ -28,8 +43,14 @@ target_compile_definitions(comon PRIVATE
 	EXT_TWEAK_VER=${comon_VERSION_TWEAK}
 )
 
+if (VCPKG_TARGET_TRIPLET STREQUAL "x64-windows-static")
+	target_compile_definitions(comon PRIVATE
+		ARCH_X64
+	)
+endif()
+
 set_target_properties(comon PROPERTIES
-    LINK_OPTIONS LINKER:/MANIFEST:NO
+	LINK_OPTIONS LINKER:/MANIFEST:NO
 )
 
 install(TARGETS comon RUNTIME DESTINATION ".")
