@@ -106,8 +106,8 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
     assert(is_clsid_allowed(clsid));
 
     auto is_breakpoint_for_interface = [&clsid, &iid](const auto& brk) {
-        if (std::holds_alternative<cointerface_method_breakpoint>(brk)) {
-            auto& cmbrk{ std::get<cointerface_method_breakpoint>(brk) };
+        if (std::holds_alternative<cobreakpoint>(brk)) {
+            auto& cmbrk{ std::get<cobreakpoint>(brk) };
             return cmbrk.clsid == clsid && cmbrk.iid == iid;
         } else if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
             auto& csbrk{ std::get<coquery_single_return_breakpoint>(brk) };
@@ -160,7 +160,8 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
         ULONG64 fn_address{};
         RETURN_IF_FAILED(_cc.read_pointer(vtable_addr, fn_address));
 
-        if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"QueryInterface" }, fn_address) }; FAILED(hr)) {
+        if (auto hr{ set_breakpoint(cobreakpoint{ clsid, iid, L"QueryInterface", CALLCONV::CC_STDCALL },
+            fn_address) }; FAILED(hr)) {
             _logger.log_error(std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
         }
 
@@ -169,7 +170,8 @@ HRESULT comonitor::register_vtable(const CLSID& clsid, const IID& iid, ULONG64 v
         // special case for IClassFactory when we need to set breakpoint on the CreateInstance (4th method in the vtbl)
         if (iid == __uuidof(IClassFactory)) {
             if (SUCCEEDED((_cc.read_pointer(vtable_addr + 3 * _cc.get_pointer_size(), fn_address)))) {
-                if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"CreateInstance" }, fn_address) }; FAILED(hr)) {
+                if (auto hr{ set_breakpoint(cobreakpoint{ clsid, iid, L"CreateInstance", CALLCONV::CC_STDCALL },
+                    fn_address) }; FAILED(hr)) {
                     _logger.log_error(std::format(L"Failed to set a breakpoint on IClassFactory::CreateInstance method (CLSID: {:b})", clsid), hr);
                 }
             }
@@ -245,7 +247,8 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
         if (is_clsid_allowed(clsid)) {
             auto vtable_addr{ module_base_addr + vtable };
             if (ULONG64 fn_query_interface{}; SUCCEEDED(_cc.read_pointer(vtable_addr, fn_query_interface))) {
-                if (auto hr{ set_breakpoint(cointerface_method_breakpoint{ clsid, iid, L"QueryInterface" }, fn_query_interface) }; FAILED(hr)) {
+                if (auto hr{ set_breakpoint(cobreakpoint{ clsid, iid, L"QueryInterface", CALLCONV::CC_STDCALL },
+                    fn_query_interface) }; FAILED(hr)) {
                     _logger.log_error(
                         std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
                 }

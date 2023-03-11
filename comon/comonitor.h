@@ -17,15 +17,11 @@
 #pragma once
 
 #include <array>
-#include <filesystem>
-#include <memory>
 #include <optional>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
-#include <tuple>
 
 #include <Windows.h>
 #include <wil/com.h>
@@ -41,6 +37,13 @@ struct no_filter {};
 struct including_filter { const std::unordered_set<CLSID> clsids; };
 struct excluding_filter { const std::unordered_set<CLSID> clsids; };
 using cofilter = std::variant<no_filter, including_filter, excluding_filter>;
+
+enum class cobreakpoint_behavior {
+    stop_before_call,
+    stop_after_call,
+    always_stop,
+    never_stop
+};
 
 class comonitor {
 private:
@@ -74,14 +77,29 @@ private:
         const std::wstring function_name;
     };
 
-    struct cointerface_method_breakpoint {
+    /// Special type of breakpoint that is placed on a method of a COM interface
+    struct cobreakpoint {
         const CLSID clsid;
         const IID iid;
         const std::wstring method_name;
+        const CALLCONV callconv;
+        const std::wstring return_type;
+        const method_arg_collection args;
+        const cobreakpoint_behavior behavior;
     };
 
-    using breakpoint = std::variant<function_breakpoint, coquery_single_return_breakpoint, 
-        coregister_return_breakpoint, cointerface_method_breakpoint>;
+    struct cobreakpoint_return {
+        const CLSID clsid;
+        const IID iid;
+        const std::wstring method_name;
+        const std::wstring return_type;
+        const method_arg_collection out_args;
+        const std::vector<call_context::arg_val> out_arg_values;
+        const bool should_stop;
+    };
+
+    using breakpoint = std::variant<function_breakpoint, coquery_single_return_breakpoint,
+        coregister_return_breakpoint, cobreakpoint, cobreakpoint_return>;
 
     struct memory_protect {
         DWORD old_protect;
@@ -143,7 +161,9 @@ private:
     }
 
     bool is_onetime_breakpoint(const breakpoint& brk) {
-        return std::holds_alternative<coquery_single_return_breakpoint>(brk) || std::holds_alternative<coregister_return_breakpoint>(brk);
+        return std::holds_alternative<coquery_single_return_breakpoint>(brk) ||
+            std::holds_alternative<coregister_return_breakpoint>(brk) ||
+            std::holds_alternative<cobreakpoint_return>(brk);
     }
 
     HRESULT set_breakpoint(const breakpoint& brk, ULONG64 address, PULONG brk_id = nullptr);
@@ -162,6 +182,10 @@ private:
     void handle_coquery_return(const coquery_single_return_breakpoint& brk);
 
     void handle_coregister_return(const coregister_return_breakpoint& brk);
+
+    bool handle_cobreakpoint(const cobreakpoint& brk);
+
+    bool handle_cobreakpoint_return(const cobreakpoint_return& brk);
 
     void handle_DllGetClassObject(const function_breakpoint&);
 
@@ -199,8 +223,7 @@ public:
 
     std::unordered_map<CLSID, std::vector<std::pair<ULONG64, IID>>> list_cotypes() const;
 
-    HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num);
-    HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, std::wstring_view method_name);
+    HRESULT create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD method_num, cobreakpoint_behavior behavior);
 
     HRESULT register_vtable(const CLSID& clsid, const IID& iid, ULONG64 vtable_addr, bool save_in_database, bool replace_if_exists);
 

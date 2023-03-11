@@ -135,40 +135,47 @@ void cometa::fill_known_iids() {
     insert_cotype(cotype{ __uuidof(IUnknown), L"IUnknown", cotype_kind::Interface, {}, true });
 
     insert_cotype_method(comethod{ __uuidof(IUnknown), L"QueryInterface", 0, CC_STDCALL, std::nullopt, L"HRESULT" });
-    insert_cotype_method_arg(__uuidof(IUnknown), 0, comethod_arg{ L"riid", L"REFIID", IDLFLAG_FIN }, 0);
-    insert_cotype_method_arg(__uuidof(IUnknown), 0, comethod_arg{ L"ppvObject", L"void**", IDLFLAG_FOUT }, 1);
+    insert_cotype_method_arg(__uuidof(IUnknown), 0, { L"this", L"void*", 0 }, 0);
+    insert_cotype_method_arg(__uuidof(IUnknown), 0, { L"riid", L"GUID*", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IUnknown), 0, { L"ppvObject", L"void**", IDLFLAG_FOUT }, 2);
 
     insert_cotype_method(comethod{ __uuidof(IUnknown), L"AddRef", 1, CC_STDCALL, std::nullopt, L"ULONG" });
+    insert_cotype_method_arg(__uuidof(IUnknown), 1, { L"this", L"void*", 0 }, 0);
 
     insert_cotype_method(comethod{ __uuidof(IUnknown), L"Release", 2, CC_STDCALL, std::nullopt, L"ULONG" });
+    insert_cotype_method_arg(__uuidof(IUnknown), 2, { L"this", L"void*", 0 }, 0);
 
     // IDispatch
     insert_cotype(cotype{ __uuidof(IDispatch), L"IDispatch", cotype_kind::Interface, __uuidof(IUnknown), true });
 
     insert_cotype_method(comethod{ __uuidof(IDispatch), L"GetTypeInfoCount", 0, CC_STDCALL, std::nullopt, L"HRESULT" });
-    insert_cotype_method_arg(__uuidof(IDispatch), 0, comethod_arg{ L"pctinfo", L"UINT*", IDLFLAG_FOUT }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 0, { L"this", L"void*", 0 }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 0, { L"pctinfo", L"UINT*", IDLFLAG_FOUT }, 1);
 
     insert_cotype_method(comethod{ __uuidof(IDispatch), L"GetTypeInfo", 1, CC_STDCALL, std::nullopt, L"HRESULT" });
-    insert_cotype_method_arg(__uuidof(IDispatch), 1, comethod_arg{ L"iTInfo", L"UINT", IDLFLAG_FIN }, 0);
-    insert_cotype_method_arg(__uuidof(IDispatch), 1, comethod_arg{ L"lcid", L"LCID", IDLFLAG_FIN }, 1);
-    insert_cotype_method_arg(__uuidof(IDispatch), 1, comethod_arg{ L"ppTInfo", L"ITypeInfo**", IDLFLAG_FOUT }, 2);
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, { L"this", L"void*", 0 }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, { L"iTInfo", L"UINT", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, { L"lcid", L"unsigned short", IDLFLAG_FIN }, 2);
+    insert_cotype_method_arg(__uuidof(IDispatch), 1, { L"ppTInfo", L"ITypeInfo**", IDLFLAG_FOUT }, 3);
 
     insert_cotype_method(comethod{ __uuidof(IDispatch), L"GetIDsOfNames", 2, CC_STDCALL, std::nullopt, L"HRESULT" });
-    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"riid", L"REFIID", IDLFLAG_FIN }, 0);
-    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"rgszNames", L"LPOLESTR*", IDLFLAG_FIN }, 1);
-    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"cNames", L"UINT", IDLFLAG_FIN }, 2);
-    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"lcid", L"LCID", IDLFLAG_FIN }, 3);
-    insert_cotype_method_arg(__uuidof(IDispatch), 2, comethod_arg{ L"rgDispId", L"DISPID*", IDLFLAG_FOUT }, 4);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, { L"this", L"void*", 0 }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, { L"riid", L"GUID*", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, { L"rgszNames", L"LPOLESTR*", IDLFLAG_FIN }, 2);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, { L"cNames", L"UINT", IDLFLAG_FIN }, 3);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, { L"lcid", L"unsigned short", IDLFLAG_FIN }, 4);
+    insert_cotype_method_arg(__uuidof(IDispatch), 2, { L"rgDispId", L"DISPID*", IDLFLAG_FOUT }, 5);
 
     insert_cotype_method(comethod{ __uuidof(IDispatch), L"Invoke", 3, CC_STDCALL, std::nullopt, L"HRESULT" });
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"dispIdMember", L"DISPID", IDLFLAG_FIN }, 0);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"riid", L"REFIID", IDLFLAG_FIN }, 1);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"lcid", L"LCID", IDLFLAG_FIN }, 2);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"wFlags", L"WORD", IDLFLAG_FIN }, 3);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pDispParams", L"DISPPARAMS*", IDLFLAG_FIN }, 4);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pVarResult", L"VARIANT*", IDLFLAG_FOUT }, 5);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pExcepInfo", L"EXCEPINFO*", IDLFLAG_FOUT }, 6);
-    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"puArgErr", L"UINT*", IDLFLAG_FOUT }, 7);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, { L"this", L"void*", 0 }, 0);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"dispIdMember", L"DISPID", IDLFLAG_FIN }, 1);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"riid", L"GUID*", IDLFLAG_FIN }, 2);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"lcid", L"unsigned short", IDLFLAG_FIN }, 3);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"wFlags", L"unsigned short", IDLFLAG_FIN }, 4);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pDispParams", L"DISPPARAMS*", IDLFLAG_FIN }, 5);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pVarResult", L"VARIANT*", IDLFLAG_FOUT }, 6);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"pExcepInfo", L"EXCEPINFO*", IDLFLAG_FOUT }, 7);
+    insert_cotype_method_arg(__uuidof(IDispatch), 3, comethod_arg{ L"puArgErr", L"unsigned int*", IDLFLAG_FOUT }, 8);
 
     transaction.commit();
 
@@ -306,9 +313,9 @@ HRESULT cometa::index_tlb(std::wstring_view tlb_path) {
     RETURN_IF_FAILED(::LoadTypeLibEx(tlb_path.data(), REGKIND_NONE, typelib.put()));
 
     auto types_len = typelib->GetTypeInfoCount();
-    for (UINT i = 0; i < types_len; i++) {
+    for (UINT type_num = 0; type_num < types_len; type_num++) {
         wil::com_ptr_t<ITypeInfo> typeinfo{};
-        RETURN_IF_FAILED(typelib->GetTypeInfo(i, typeinfo.put()));
+        RETURN_IF_FAILED(typelib->GetTypeInfo(type_num, typeinfo.put()));
 
         wil::unique_bstr name{};
         RETURN_IF_FAILED(typeinfo->GetDocumentation(MEMBERID_NIL, name.put(), nullptr, nullptr, nullptr));
@@ -325,8 +332,8 @@ HRESULT cometa::index_tlb(std::wstring_view tlb_path) {
             auto kind{ typeattr->typekind == TKIND_INTERFACE ? cotype_kind::Interface : cotype_kind::DispInterface };
 
             auto get_type_name = [typeinfo, kind](const TYPEDESC* tdesc) {
-                auto return_type_v{ typelib::get_type_desc(typeinfo.get(), tdesc) };
-                return std::holds_alternative<std::wstring>(return_type_v) ? std::get<std::wstring>(return_type_v) :
+                auto type_name{ typelib::get_type_desc(typeinfo.get(), tdesc) };
+                return std::holds_alternative<std::wstring>(type_name) ? std::get<std::wstring>(type_name) :
                     std::wstring{ typelib::bad_type_name };
             };
 
@@ -377,14 +384,21 @@ HRESULT cometa::index_tlb(std::wstring_view tlb_path) {
                     std::optional<DISPID> dispid = kind == cotype_kind::DispInterface ? std::make_optional(fd->memid) : std::nullopt;
 
                     assert((SHORT)names.size() == fd->cParams + 1);
-                    for (int arg_ordinal = 0; arg_ordinal < fd->cParams; arg_ordinal++) {
-                        auto elem_desc{ fd->lprgelemdescParam + arg_ordinal };
+
+                    // first parameter is this pointer
+                    int arg_ordinal{};
+                    insert_cotype_method_arg(typeattr->guid, ordinal, { L"this", L"void*", 0 }, arg_ordinal);
+                    arg_ordinal += 1;
+
+                    for (int param_num = 0; param_num < fd->cParams; param_num++) {
+                        auto elem_desc{ fd->lprgelemdescParam + param_num };
                         comethod_arg arg{
-                            std::wstring { names[arg_ordinal + 1].get()},
+                            std::wstring { names[param_num + 1].get()},
                             get_type_name(&elem_desc->tdesc),
                             elem_desc->idldesc.wIDLFlags
                         };
                         insert_cotype_method_arg(typeattr->guid, ordinal, arg, arg_ordinal);
+                        arg_ordinal += 1;
                     }
 
                     auto result_vt{ fd->elemdescFunc.tdesc.vt & 0xFFF };
@@ -396,7 +410,7 @@ HRESULT cometa::index_tlb(std::wstring_view tlb_path) {
                             get_type_name(&tdesc),
                             IDLFLAG_FOUT | IDLFLAG_FRETVAL
                         };
-                        insert_cotype_method_arg(typeattr->guid, ordinal, arg, fd->cParams);
+                        insert_cotype_method_arg(typeattr->guid, ordinal, arg, arg_ordinal);
 
                         insert_cotype_method({ typeattr->guid, method_name, ordinal, fd->callconv, dispid, typelib::vt_to_string(VT_HRESULT) });
                     } else {
@@ -657,7 +671,7 @@ std::vector<std::tuple<std::wstring, CLSID, ULONG64>> cometa::find_vtables_by_ii
 }
 
 std::vector<std::tuple<std::wstring, IID, ULONG64>> cometa::find_vtables_by_clsid(const CLSID& clsid) {
-    SQLite::Statement query{ *_db, "select module_name,iid,vtable from vtables_{} where clsid = :clsid" };
+    SQLite::Statement query{ *_db, "select module_name,iid,vtable from vtables where clsid = :clsid" };
     query.bindNoCopy(":clsid", &clsid, sizeof(CLSID));
 
     std::vector<std::tuple<std::wstring, IID, ULONG64>> vtables{};

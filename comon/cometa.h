@@ -20,6 +20,7 @@
 #include <optional>
 #include <deque>
 #include <unordered_set>
+#include <unordered_map>
 #include <filesystem>
 #include <variant>
 #include <functional>
@@ -34,6 +35,8 @@ namespace fs = std::filesystem;
 
 namespace comon_ext
 {
+
+static const std::unordered_map<int, std::wstring_view> vt_names;
 
 enum class cotype_kind
 {

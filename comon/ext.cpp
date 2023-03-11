@@ -22,6 +22,7 @@
 #include <tuple>
 #include <vector>
 #include <span>
+#include <ranges>
 
 #include <DbgEng.h>
 #include <wil/com.h>
@@ -36,7 +37,7 @@ namespace fs = std::filesystem;
 namespace {
 dbgsession g_dbgsession{};
 
-const wchar_t* monitor_not_enabled_error{ L"COM monitor not enabled for the current process.\n" };
+const wchar_t* monitor_not_enabled_error{ L"COM monitor not enabled for the current process. Run !comon attach to enable it.\n" };
 
 std::vector<std::string> split_args(std::string_view args) {
     char citation_char{ '\0' };
@@ -133,6 +134,40 @@ void cometa_showc(wil::com_ptr_t<IDebugControl4> dbgcontrol, comon_ext::cometa& 
     }
 }
 
+HRESULT try_finding_active_monitor(IDebugControl4* dbgcontrol, comonitor** monitor) {
+    if (auto m{ g_dbgsession.find_active_monitor() }; m) {
+        *monitor = m;
+        return S_OK;
+    } else {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
+        *monitor = nullptr;
+        return E_FAIL;
+    }
+}
+
+HRESULT evaluate_number(IDebugControl4* dbgeng, std::string_view arg, PULONG64 number) {
+    try {
+        if (arg.starts_with("0x")) {
+            *number = std::stoull(arg.data(), nullptr, 16);
+        } else if (arg.starts_with("0y")) {
+            *number = std::stoull(arg.data() + 2, nullptr, 2);
+        } else if (arg.starts_with("0t")) {
+            *number = std::stoull(arg.data() + 2, nullptr, 8);
+        } else if (arg.starts_with("0n")) {
+            *number = std::stoull(arg.data() + 2, nullptr, 10);
+        } else {
+            ULONG radix{};
+            RETURN_IF_FAILED(dbgeng->GetRadix(&radix));
+            size_t pos{};
+            *number = std::stoull(arg.data(), &pos, radix);
+            return pos == arg.size() ? S_OK : E_INVALIDARG;
+        }
+        return S_OK;
+    } catch (std::exception&) {
+        return E_INVALIDARG;
+    }
+}
+
 }
 
 extern "C" HRESULT CALLBACK DebugExtensionInitialize(PULONG version, PULONG flags) {
@@ -195,52 +230,6 @@ extern "C" HRESULT CALLBACK cometa(IDebugClient * dbgclient, PCSTR args) {
     }
 }
 
-extern "C" HRESULT CALLBACK coreg(IDebugClient * dbgclient, PCSTR args) {
-    wil::com_ptr_t<IDebugControl4> dbgcontrol;
-    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
-
-    auto vargs{ split_args(args) };
-
-    if (vargs.size() < 3) {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
-        return E_INVALIDARG;
-    }
-
-    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
-        bool save_in_database{ true };
-        bool replace_if_exists{};
-        int arg_start_index = 0;
-
-        if (vargs[arg_start_index] == "--nosave") {
-            arg_start_index++;
-            save_in_database = false;
-        }
-
-        if (vargs[arg_start_index] == "--force") {
-            arg_start_index++;
-            replace_if_exists = true;
-        }
-
-        if (vargs.size() - arg_start_index < 3) {
-            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
-            return E_INVALIDARG;
-        }
-
-        CLSID clsid;
-        RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start_index]), clsid));
-        IID iid;
-        RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start_index + 1]), iid));
-
-        DEBUG_VALUE vtable_addr{};
-        RETURN_IF_FAILED(dbgcontrol->Evaluate(vargs[arg_start_index + 2].c_str(), DEBUG_VALUE_INT64, &vtable_addr, nullptr));
-
-        return monitor->register_vtable(clsid, iid, vtable_addr.I64, save_in_database, replace_if_exists);
-    } else {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
-        return E_FAIL;
-    }
-}
-
 extern "C" HRESULT CALLBACK comon(IDebugClient * dbgclient, PCSTR args) {
     wil::com_ptr_t<IDebugControl4> dbgcontrol;
     RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
@@ -291,45 +280,166 @@ extern "C" HRESULT CALLBACK comon(IDebugClient * dbgclient, PCSTR args) {
         return E_INVALIDARG;
     }
 
-    if (auto monitor{ g_dbgsession.find_active_monitor() }; monitor) {
-        if (vargs[0] == "attach") {
-            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"COM monitor is already enabled for the current process.");
-            return E_FAIL;
-        } else if (vargs[0] == "pause") {
-            monitor->pause();
-        } else if (vargs[0] == "resume") {
-            monitor->resume();
-        } else if (vargs[0] == "detach") {
-            g_dbgsession.detach();
-        } else if (vargs[0] == "status") {
-            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"COM monitor is {}\n",
-                monitor->is_paused() ? L"PAUSED" : L"RUNNING").c_str());
-
-            auto& cometa{ g_dbgsession.get_metadata() };
-            dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nCOM types recorded for the current process:\n");
-            for (auto& [clsid, vtables] : monitor->list_cotypes()) {
-                auto clsid_name{ cometa.resolve_class_name(clsid) };
-                dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL,
-                    std::format(L"\n<col fg=\"srcannot\">CLSID: <b>{:b} ({})</b></col>\n", clsid, clsid_name ? *clsid_name : L"N/A").c_str());
-                for (auto& [addr, iid] : vtables) {
-                    auto iid_name{ cometa.resolve_type_name(iid) };
-                    dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL,
-                        std::format(L"  IID: <b>{:b} ({})</b>, address: {:#x}\n", iid, iid_name ? *iid_name : L"N/A", addr).c_str());
-                }
-            }
-        } else {
-            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
-            return E_INVALIDARG;
-        }
-        return S_OK;
-    } else if (vargs[0] == "attach") {
+    if (vargs[0] == "attach") {
         auto filter = parse_filter(std::span{ vargs }.subspan(1));
         g_dbgsession.attach(filter);
         dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, L"<b>COM monitor enabled for the current process.</b>\n");
         print_filter(filter);
         return S_OK;
-    } else {
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, monitor_not_enabled_error);
-        return E_FAIL;
     }
+
+    comonitor* monitor{};
+    RETURN_IF_FAILED(try_finding_active_monitor(dbgcontrol.get(), &monitor));
+
+    if (vargs[0] == "attach") {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"COM monitor is already enabled for the current process.");
+        return E_FAIL;
+    } else if (vargs[0] == "pause") {
+        monitor->pause();
+    } else if (vargs[0] == "resume") {
+        monitor->resume();
+    } else if (vargs[0] == "detach") {
+        g_dbgsession.detach();
+    } else if (vargs[0] == "status") {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, std::format(L"COM monitor is {}\n",
+            monitor->is_paused() ? L"PAUSED" : L"RUNNING").c_str());
+
+        auto& cometa{ g_dbgsession.get_metadata() };
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nCOM types recorded for the current process:\n");
+        for (auto& [clsid, vtables] : monitor->list_cotypes()) {
+            auto clsid_name{ cometa.resolve_class_name(clsid) };
+            dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL,
+                std::format(L"\n<col fg=\"srcannot\">CLSID: <b>{:b} ({})</b></col>\n", clsid, clsid_name ? *clsid_name : L"N/A").c_str());
+            for (auto& [addr, iid] : vtables) {
+                auto iid_name{ cometa.resolve_type_name(iid) };
+                dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL,
+                    std::format(L"  IID: <b>{:b} ({})</b>, address: {:#x}\n", iid, iid_name ? *iid_name : L"N/A", addr).c_str());
+            }
+        }
+    } else {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
+        return E_INVALIDARG;
+    }
+    return S_OK;
+}
+
+extern "C" HRESULT CALLBACK coreg(IDebugClient * dbgclient, PCSTR args) {
+    wil::com_ptr_t<IDebugControl4> dbgcontrol;
+    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), dbgcontrol.put_void()));
+
+    auto vargs{ split_args(args) };
+
+    if (vargs.size() < 3) {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
+        return E_INVALIDARG;
+    }
+
+    comonitor* monitor{};
+    RETURN_IF_FAILED(try_finding_active_monitor(dbgcontrol.get(), &monitor));
+
+    bool save_in_database{ true };
+    bool replace_if_exists{};
+    int arg_start_index = 0;
+
+    if (vargs[arg_start_index] == "--nosave") {
+        arg_start_index++;
+        save_in_database = false;
+    }
+
+    if (vargs[arg_start_index] == "--force") {
+        arg_start_index++;
+        replace_if_exists = true;
+    }
+
+    if (vargs.size() - arg_start_index < 3) {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
+        return E_INVALIDARG;
+    }
+
+    CLSID clsid;
+    RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start_index]), clsid));
+    IID iid;
+    RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start_index + 1]), iid));
+
+    ULONG64 vtable_addr{};
+    RETURN_IF_FAILED(evaluate_number(dbgcontrol.get(), vargs[arg_start_index + 2], &vtable_addr));
+
+    return monitor->register_vtable(clsid, iid, vtable_addr, save_in_database, replace_if_exists);
+}
+
+extern "C" HRESULT CALLBACK cobp(IDebugClient * dbgclient, PCSTR args) {
+    auto parse_behavior = [](const std::string& arg) -> std::optional<cobreakpoint_behavior> {
+        if (arg == "--before") {
+            return cobreakpoint_behavior::stop_before_call;
+        }
+        if (arg == "--after") {
+            return cobreakpoint_behavior::stop_after_call;
+        }
+        if (arg == "--always") {
+            return cobreakpoint_behavior::always_stop;
+        }
+        if (arg == "--trace-only") {
+            return cobreakpoint_behavior::never_stop;
+        }
+        return std::nullopt;
+    };
+
+    wil::com_ptr_t<IDebugControl4> dbgcontrol;
+    RETURN_IF_FAILED(dbgclient->QueryInterface(__uuidof(IDebugControl4), reinterpret_cast<LPVOID*>(dbgcontrol.put())));
+
+    auto vargs{ split_args(args) };
+
+    if (vargs.size() < 3) {
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
+        return E_INVALIDARG;
+    }
+
+    comonitor* monitor{};
+    RETURN_IF_FAILED(try_finding_active_monitor(dbgcontrol.get(), &monitor));
+
+    int arg_start = 0;
+    cobreakpoint_behavior behavior = cobreakpoint_behavior::stop_before_call;
+    if (auto bopt{ parse_behavior(vargs[0]) }; bopt) {
+        behavior = *bopt;
+        arg_start++;
+    }
+
+    CLSID clsid;
+    RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start]), clsid));
+    IID iid;
+    RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start + 1]), iid));
+
+    ULONG64 method_num{};
+    if (FAILED(evaluate_number(dbgcontrol.get(), vargs[arg_start + 2], &method_num))) {
+        auto& cometa{ g_dbgsession.get_metadata() };
+        if (auto methods{ cometa.get_type_methods(iid) }; methods) {
+            auto method_name{ widen(vargs[arg_start + 2]) };
+            auto matching_method = [&method_name](const comethod& method) { return method.name == method_name; };
+            if (auto res{ std::find_if(std::cbegin(*methods), std::cend(*methods), matching_method) };res != std::end(*methods)) {
+                method_num = static_cast<DWORD>(res - std::begin(*methods));
+                return monitor->create_cobreakpoint(clsid, iid, static_cast<DWORD>(method_num), behavior);
+            } else {
+                dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: Could not find a method with the given name in the metadata.\n");
+                return E_INVALIDARG;
+            }
+        } else {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: No methods found for a given type in the metadata.\n");
+            return E_INVALIDARG;
+        }
+    } else {
+        return monitor->create_cobreakpoint(clsid, iid, static_cast<DWORD>(method_num), behavior);
+    }
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved) {
+    UNREFERENCED_PARAMETER(lpReserved);
+
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH:
+        ::DisableThreadLibraryCalls(hModule);
+        break;
+    case DLL_PROCESS_DETACH:
+        break;
+    }
+    return TRUE;
 }

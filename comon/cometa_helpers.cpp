@@ -8,6 +8,7 @@
 #include <compare>
 
 #include "cometa.h"
+#include "arch.h"
 
 namespace ranges = std::ranges;
 
@@ -112,6 +113,20 @@ std::variant<typelib_info, HRESULT> typelib::get_tlbinfo(HKEY typelib_hkey) {
     return E_INVALIDARG;
 }
 
+static const std::unordered_map<int, std::wstring_view> vt_names = {
+    { VT_EMPTY, L"void" }, { VT_NULL, L"null" }, { VT_I2, L"short" }, { VT_I4, L"long" },
+    { VT_R4, L"single" }, { VT_R8, L"double" }, { VT_CY, L"CURRENCY" }, { VT_DATE, L"DATE" },
+    { VT_BSTR, L"BSTR" }, { VT_DISPATCH, L"IDispatch*" }, { VT_ERROR, L"SCODE" }, { VT_BOOL, L"bool" },
+    { VT_VARIANT, L"VARIANT" }, { VT_UNKNOWN, L"IUnknown*" }, { VT_DECIMAL, L"DECIMAL" }, { VT_I1, L"char" },
+    { VT_UI1, L"unsigned char" }, { VT_UI2, L"unsigned short" }, { VT_UI4, L"unsigned long" }, { VT_I8, L"int64" },
+    { VT_UI8, L"uint64" }, { VT_INT, L"int" }, { VT_UINT, L"unsigned int" }, { VT_VOID, L"void" },
+    { VT_HRESULT, L"HRESULT" }, { VT_PTR, L"void*" }, { VT_INT_PTR, L"int*" }, { VT_UINT_PTR, L"unsigned int*" },
+    { VT_SAFEARRAY, L"SAFEARRAY" }, { VT_CARRAY, L"CARRAY" }, { VT_USERDEFINED, L"USERDEFINED" },
+    { VT_LPSTR, L"LPSTR" }, { VT_LPWSTR, L"LPWSTR" }, { VT_FILETIME, L"FILETIME" },
+    { VT_BLOB, L"BLOB" }, { VT_STREAM, L"STREAM" }, { VT_STORAGE, L"STORAGE" }, { VT_STREAMED_OBJECT, L"STREAMED_OBJECT" },
+    { VT_STORED_OBJECT, L"STORED_OBJECT" }, { VT_BLOB_OBJECT, L"BLOB_OBJECT" }, { VT_CF, L"CF" }, { VT_CLSID, L"GUID" }
+};
+
 std::variant<typelib::typeattr_t, HRESULT> typelib::get_typeinfo_attr(ITypeInfo* typeinfo) {
     auto typeattr_deleter = [typeinfo](TYPEATTR* ta) { typeinfo->ReleaseTypeAttr(ta); };
 
@@ -184,23 +199,6 @@ std::variant<HRESULT, std::vector<wil::unique_bstr>> typelib::get_comethod_names
         [](BSTR bstr) { return wil::unique_bstr{ bstr }; });
 
     return result;
-}
-
-namespace {
-
-static const std::unordered_map<int, std::wstring_view> vt_names = {
-    { VT_EMPTY, L"void" }, { VT_NULL, L"null" }, { VT_I2, L"short" }, { VT_I4, L"long" },
-    { VT_R4, L"single" }, { VT_R8, L"double" }, { VT_CY, L"CURRENCY" }, { VT_DATE, L"DATE" },
-    { VT_BSTR, L"BSTR" }, { VT_DISPATCH, L"IDispatch*" }, { VT_ERROR, L"SCODE" }, { VT_BOOL, L"boolean" },
-    { VT_VARIANT, L"VARIANT" }, { VT_UNKNOWN, L"IUnknown*" }, { VT_DECIMAL, L"DECIMAL" }, { VT_I1, L"char" },
-    { VT_UI1, L"unsigned char" }, { VT_UI2, L"unsigned short" }, { VT_UI4, L"unsigned long" }, { VT_I8, L"int64" },
-    { VT_UI8, L"uint64" }, { VT_INT, L"int" }, { VT_UINT, L"unsigned int" }, { VT_VOID, L"void" },
-    { VT_HRESULT, L"HRESULT" }, { VT_PTR, L"PTR" }, { VT_SAFEARRAY, L"SAFEARRAY" }, { VT_CARRAY, L"CARRAY" },
-    { VT_USERDEFINED, L"USERDEFINED" }, { VT_LPSTR, L"LPSTR" }, { VT_LPWSTR, L"LPWSTR" }, { VT_FILETIME, L"FILETIME" },
-    { VT_BLOB, L"BLOB" }, { VT_STREAM, L"STREAM" }, { VT_STORAGE, L"STORAGE" }, { VT_STREAMED_OBJECT, L"STREAMED_OBJECT" },
-    { VT_STORED_OBJECT, L"STORED_OBJECT" }, { VT_BLOB_OBJECT, L"BLOB_OBJECT" }, { VT_CF, L"CF" }, { VT_CLSID, L"CLSID" }
-};
-
 }
 
 std::wstring typelib::vt_to_string(VARTYPE vt)

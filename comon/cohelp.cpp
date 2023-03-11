@@ -66,6 +66,13 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient * dbgclient, [[maybe_unused]] PC
       - shows the current monitoring status. It also lists all the virtual tables registered
         for a given process providing their IIDs and CLSIDs
 
+  !cobp [--before|--after|--always|--trace-only] <clsid> <iid> <method_name|method_number>
+      - sets a cobreakpoint (COM breakpoint) on a given COM method. When you create a cobreakpoint,
+        comon will print the parameter values and return value of the method (if metadata is available).
+        Additionally, the cobreakpoint can make the debugger stop before (--before), after (--after), or
+        before and after (--always) the method is called. If you only want to see the parameter values,
+        use the --trace-only option. To remove a cobreakpoint, use the bc with the cobreakpoint ID.
+
   !coreg [--force] [--nosave] <clsid> <iid> <vtable_address>
       - manually add a virtual table address to the COM monitor and bind them with
         a given COM interface (IID) and COM class (CLSID). If the --force option is
