@@ -685,3 +685,17 @@ std::vector<std::tuple<std::wstring, IID, ULONG64>> cometa::find_vtables_by_clsi
     return vtables;
 }
 
+std::vector<std::tuple<ULONG, CLSID>> cometa::find_clsids_by_module_name(const std::wstring& module_name) {
+    SQLite::Statement query{ *_db, "select distinct module_timestamp,clsid from vtables where module_name = :module_name" };
+    auto module_name_u8{ to_utf8(module_name) };
+    query.bindNoCopy(":module_name", module_name_u8.c_str());
+
+    std::vector<std::tuple<ULONG, CLSID>> vtables{};
+    while (query.executeStep()) {
+        vtables.push_back({
+            query.getColumn("module_timestamp").getUInt(),
+            *(reinterpret_cast<const GUID*>(query.getColumn("clsid").getBlob()))
+            });
+    }
+    return vtables;
+}

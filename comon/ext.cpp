@@ -110,10 +110,11 @@ void cometa_showi(wil::com_ptr_t<IDebugControl4> dbgcontrol, comon_ext::cometa& 
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nRegistered VTables for IID:\n");
     for (auto& [module_name, clsid, vtbl] : cometa.find_vtables_by_iid(iid)) {
         auto clsid_name{ cometa.resolve_class_name(clsid) };
-        dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-            std::format(L"- Module: {}, CLSID: {:b} ({}), VTable offset: {:#x}\n",
-                module_name, clsid, clsid_name ? *clsid_name : L"N/A", vtbl).c_str());
+        dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, std::format(
+            L"- Module: <link cmd=\"!cometa showm {0}\">{0}</link>, CLSID: <link cmd=\"!cometa showc {1:b}\">{1:b}</link> ({2}), VTable offset: {3:#x}\n",
+            module_name, clsid, clsid_name ? *clsid_name : L"N/A", vtbl).c_str());
     }
+    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\n");
 }
 
 void cometa_showc(wil::com_ptr_t<IDebugControl4> dbgcontrol, comon_ext::cometa& cometa, const CLSID& clsid) {
@@ -128,9 +129,33 @@ void cometa_showc(wil::com_ptr_t<IDebugControl4> dbgcontrol, comon_ext::cometa& 
     dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\nRegistered VTables for CLSID:\n");
     for (auto& [module_name, iid, vtbl] : cometa.find_vtables_by_clsid(clsid)) {
         auto iid_name{ cometa.resolve_type_name(iid) };
+        dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL, std::format(
+            L"- module: <link cmd=\"!cometa showm {0}\">{0}</link>, IID: <link cmd=\"!cometa showi {1:b}\">{1:b}</link> ({2}), VTable offset: {3:#x}\n",
+            module_name, iid, iid_name ? *iid_name : L"N/A", vtbl).c_str());
+    }
+    dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\n");
+}
+
+void cometa_showm(wil::com_ptr_t<IDebugControl4> dbgcontrol, comon_ext::cometa& cometa, const std::wstring& module_name) {
+    if (auto clsids{ cometa.find_clsids_by_module_name(module_name) }; !clsids.empty()) {
+        std::ranges::sort(clsids, std::ranges::greater{}, [](auto& v) { return std::get<0>(v); });
+
+        ULONG timestamp{};
+        for (auto& [module_timestamp, clsid] : clsids) {
+            if (module_timestamp != timestamp) {
+                dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
+                    std::format(L"\nRegistered CLSIDs for module with timestamp {:#x}:\n", timestamp).c_str());
+                timestamp = module_timestamp;
+            }
+            auto clsid_name{ cometa.resolve_class_name(clsid) };
+            dbgcontrol->ControlledOutputWide(DEBUG_OUTCTL_AMBIENT_DML, DEBUG_OUTPUT_NORMAL,
+                std::format(L"- CLSID: <link cmd=\"!cometa showc {0:b}\">{0:b}</link> ({1})\n",
+                    clsid, clsid_name ? *clsid_name : L"N/A").c_str());
+        }
+        dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL, L"\n");
+    } else {
         dbgcontrol->OutputWide(DEBUG_OUTPUT_NORMAL,
-            std::format(L"- module: {}, IID: {:b} ({}), VTable offset: {:#x}\n",
-                module_name, iid, iid_name ? *iid_name : L"N/A", vtbl).c_str());
+            std::format(L"Can't find any details on module '{}' in the metadata.\n", module_name).c_str());
     }
 }
 
@@ -224,6 +249,13 @@ extern "C" HRESULT CALLBACK cometa(IDebugClient * dbgclient, PCSTR args) {
             dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: incorrect format of CLSID.\n");
             return E_INVALIDARG;
         }
+    } else if (vargs[0] == "showm") {
+        if (vargs.size() != 2) {
+            dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
+            return E_INVALIDARG;
+        }
+        cometa_showm(dbgcontrol, cometa, widen(vargs[1]));
+        return S_OK;
     } else {
         dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: unknown subcommand. Run !cohelp to check the syntax.\n");
         return E_INVALIDARG;

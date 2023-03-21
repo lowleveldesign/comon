@@ -50,6 +50,8 @@ extern "C" HRESULT CALLBACK cohelp(IDebugClient * dbgclient, [[maybe_unused]] PC
         interface methods (if available) and virtual tables registered for this IID.
   !cometa showc <clsid>
       - shows virtual tables registered for a given CLSID (COM class ID)
+  !cometa showm <module_name>
+      - shows virtual tables registered for a given module (DLL or EXE file)
 
   !comon attach [[-i|-e] {clsid1} {clsid2} ...]
       - starts COM monitor for the active process. If you're debugging a 32-bit WOW64
