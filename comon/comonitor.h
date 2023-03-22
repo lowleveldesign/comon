@@ -38,6 +38,13 @@ struct including_filter { const std::unordered_set<CLSID> clsids; };
 struct excluding_filter { const std::unordered_set<CLSID> clsids; };
 using cofilter = std::variant<no_filter, including_filter, excluding_filter>;
 
+enum class debuggee_type {
+    time_travel,
+    live,
+    memory_dump,
+    unknown
+};
+
 enum class cobreakpoint_behavior {
     stop_before_call,
     stop_after_call,
@@ -133,6 +140,8 @@ private:
     const HANDLE _process_handle;
     const ULONG _process_id;
 
+    const debuggee_type _dbgtype;
+
     const call_context& _cc;
 
     const cofilter _filter;
@@ -147,7 +156,7 @@ private:
 
     std::variant<module_info, HRESULT> get_module_info(ULONG64 base_address) const;
 
-    std::variant<ULONG64, HRESULT> get_exported_function_addr(ULONG64 module_base_addr, std::string_view function_name) const;
+    std::variant<ULONG64, HRESULT> get_exported_function_addr(std::wstring_view module_name, ULONG64 module_base_addr, std::string_view function_name) const;
 
     auto is_clsid_allowed(const CLSID& clsid) {
         if (auto fltr = std::get_if<including_filter>(&_filter); fltr) {

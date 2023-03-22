@@ -63,9 +63,14 @@ HRESULT dbgsession::LoadModule([[maybe_unused]] ULONG64 image_file_handle, ULONG
     [[maybe_unused]] PCWSTR module_name, [[maybe_unused]] PCWSTR image_name, [[maybe_unused]] ULONG checksum,
     ULONG timestamp) {
 
-    if (module_name != nullptr) {
+    std::wstring module_name_wstr { module_name == nullptr ? L"" : module_name };
+    if (module_name_wstr.empty() && image_name != nullptr) {
+        module_name_wstr = fs::path{ image_name }.replace_extension(L"").filename().wstring();
+    }
+
+    if (!module_name_wstr.empty()) {
         if (auto monitor{ _monitors.find(get_active_process_id()) }; monitor != std::end(_monitors)) {
-            monitor->second.handle_module_load(module_name, timestamp, base_offset);
+            monitor->second.handle_module_load(module_name_wstr, timestamp, base_offset);
         }
     }
     return DEBUG_STATUS_NO_CHANGE;

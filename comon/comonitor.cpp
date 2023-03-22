@@ -50,19 +50,32 @@ ULONG get_current_process_id(IDebugSystemObjects* dbgsystemobjects) {
     dbgsystemobjects->GetCurrentProcessId(&pid);
     return pid;
 }
+
+debuggee_type get_debuggee_type(IDebugControl4* dbgcontrol) {
+    ULONG dbgclass, qualifier;
+    if (SUCCEEDED(dbgcontrol->GetDebuggeeType(&dbgclass, &qualifier)) && dbgclass == DEBUG_CLASS_USER_WINDOWS) {
+        if (qualifier == DEBUG_USER_WINDOWS_PROCESS || qualifier == DEBUG_USER_WINDOWS_PROCESS_SERVER) {
+            return debuggee_type::live;
+        } else if (qualifier == DEBUG_USER_WINDOWS_SMALL_DUMP || qualifier == DEBUG_USER_WINDOWS_DUMP) {
+            return debuggee_type::memory_dump;
+        } else if (qualifier == DEBUG_USER_WINDOWS_IDNA) {
+            return debuggee_type::time_travel;
+        } else {
+            return debuggee_type::unknown;
+        }
+    } else {
+        return debuggee_type::unknown;
+    }
+}
+
 }
 
 comonitor::comonitor(IDebugClient5* dbgclient, cometa& cometa, const call_context& cc, const cofilter& filter)
     : _dbgclient{ dbgclient }, _dbgcontrol{ _dbgclient.query<IDebugControl4>() }, _dbgsymbols{ _dbgclient.query<IDebugSymbols3>() },
     _dbgdataspaces{ _dbgclient.query<IDebugDataSpaces3>() }, _dbgsystemobjects{ _dbgclient.query<IDebugSystemObjects>() },
-    _cometa{ cometa }, _logger{ _dbgcontrol.get() }, _cc{ cc },
+    _cometa{ cometa }, _logger{ _dbgcontrol.get() }, _cc{ cc }, _dbgtype{ get_debuggee_type(_dbgcontrol.get()) },
     _process_handle{ get_current_process_handle(_dbgsystemobjects.get()) }, _process_id{ get_current_process_id(_dbgsystemobjects.get()) },
     _filter{ filter } {
-
-    // FIXME only temporarily
-    ULONG dbgclass, qualifier;
-    _dbgcontrol->GetDebuggeeType(&dbgclass, &qualifier);
-    _logger.log_info(std::format(L"class = {:#x}, qualified = {:#x}", dbgclass, qualifier));
 
     if (ULONG loaded_modules_cnt, unloaded_modules_cnt;
         SUCCEEDED(_dbgsymbols->GetNumberModules(&loaded_modules_cnt, &unloaded_modules_cnt))) {
@@ -207,38 +220,69 @@ void comonitor::resume() noexcept {
     _is_paused = false;
 }
 
-std::variant<ULONG64, HRESULT> comonitor::get_exported_function_addr(ULONG64 module_base_addr, std::string_view function_name) const {
-    IMAGE_NT_HEADERS64 headers;
-    RETURN_IF_FAILED(_dbgdataspaces->ReadImageNtHeaders(module_base_addr, &headers));
+std::variant<ULONG64, HRESULT> comonitor::get_exported_function_addr(std::wstring_view module_name, ULONG64 module_base_addr,
+    std::string_view function_name) const {
 
-    auto export_data_directory = headers.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    IMAGE_EXPORT_DIRECTORY export_table;
-    RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_data_directory.VirtualAddress, &export_table, sizeof export_table, nullptr));
+    auto find_in_export_table = [this, module_base_addr, function_name]() -> std::variant<ULONG64, HRESULT> {
+        IMAGE_NT_HEADERS64 headers;
+        RETURN_IF_FAILED(_dbgdataspaces->ReadImageNtHeaders(module_base_addr, &headers));
 
-    ULONG function_name_buffer_len{ static_cast<ULONG>(function_name.size()) + 1 };
-    auto function_name_buffer{ std::make_unique<char[]>(function_name_buffer_len) };
-    for (DWORD i = 0; i < export_table.NumberOfNames; i++)
-    {
-        ULONG64 function_name_addr{};
-        RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_table.AddressOfNames + i * sizeof(DWORD), &function_name_addr, sizeof(DWORD), nullptr));
+        auto export_data_directory = headers.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        IMAGE_EXPORT_DIRECTORY export_table;
+        RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_data_directory.VirtualAddress, &export_table, sizeof export_table, nullptr));
 
-        ULONG bytes_read{};
-        if (SUCCEEDED(_dbgdataspaces->ReadVirtual(module_base_addr + function_name_addr, function_name_buffer.get(), function_name_buffer_len * sizeof(char), &bytes_read))
-            && bytes_read == function_name_buffer_len * sizeof(char) && function_name_buffer[function_name.size()] == '\0'
-            && std::string_view{ function_name_buffer.get(), function_name.size() } == function_name) {
+        ULONG function_name_buffer_len{ static_cast<ULONG>(function_name.size()) + 1 };
+        auto function_name_buffer{ std::make_unique<char[]>(function_name_buffer_len) };
+        for (DWORD i = 0; i < export_table.NumberOfNames; i++)
+        {
+            ULONG64 function_name_addr{};
+            RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_table.AddressOfNames + i * sizeof(DWORD), &function_name_addr, sizeof(DWORD), nullptr));
 
-            // the name matches, time to find the function ordinal
-            WORD ordinal{};
-            RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_table.AddressOfNameOrdinals + i * sizeof(WORD), &ordinal, sizeof ordinal, nullptr));
+            ULONG bytes_read{};
+            if (SUCCEEDED(_dbgdataspaces->ReadVirtual(module_base_addr + function_name_addr, function_name_buffer.get(), function_name_buffer_len * sizeof(char), &bytes_read))
+                && bytes_read == function_name_buffer_len * sizeof(char) && function_name_buffer[function_name.size()] == '\0'
+                && std::string_view{ function_name_buffer.get(), function_name.size() } == function_name) {
 
-            ULONG64 function_offset{};
-            ULONG64 function_offset_addr{ module_base_addr + export_table.AddressOfFunctions + ordinal * sizeof(DWORD) };
-            RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(function_offset_addr, &function_offset, sizeof(DWORD), NULL));
+                // the name matches, time to find the function ordinal
+                WORD ordinal{};
+                RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(module_base_addr + export_table.AddressOfNameOrdinals + i * sizeof(WORD), &ordinal, sizeof ordinal, nullptr));
 
-            return module_base_addr + function_offset;
+                ULONG64 function_offset{};
+                ULONG64 function_offset_addr{ module_base_addr + export_table.AddressOfFunctions + ordinal * sizeof(DWORD) };
+                RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(function_offset_addr, &function_offset, sizeof(DWORD), NULL));
+
+                return module_base_addr + function_offset;
+            }
         }
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    };
+
+    auto find_using_symbols = [this, module_name, function_name]() -> std::variant<ULONG64, HRESULT> {
+        std::wstring sanitized_module_name{ module_name };
+        // when there is a dot in the module name, windbg replaces it with underscore - we need to do the same,
+        // otherwise, symbol resolution won't work
+        // when there is a dot in the module name, windbg replaces it with underscore
+        std::replace(std::begin(sanitized_module_name), std::end(sanitized_module_name), L'.', L'_');
+
+
+        std::wstring function_fullname{ sanitized_module_name };
+        function_fullname.append(L"!").append(std::begin(function_name), std::end(function_name));
+
+        ULONG64 offset{};
+        if (auto hr{ _dbgsymbols->GetOffsetByNameWide(function_fullname.c_str(), &offset) }; SUCCEEDED(hr)) {
+            return offset;
+        } else {
+            return hr;
+        }
+    };
+
+    if (_dbgtype == debuggee_type::live) {
+        return find_in_export_table();
+    } else if (_dbgtype == debuggee_type::time_travel || _dbgtype == debuggee_type::memory_dump) {
+        return find_using_symbols();
+    } else {
+        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
-    return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
 }
 
 void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_timestamp, ULONG64 module_base_addr) {
@@ -246,40 +290,46 @@ void comonitor::handle_module_load(std::wstring_view module_name, ULONG module_t
         _cometa.get_module_vtables({ module_name, module_timestamp, _cc.is_64bit() })) {
         if (is_clsid_allowed(clsid)) {
             auto vtable_addr{ module_base_addr + vtable };
-            if (ULONG64 fn_query_interface{}; SUCCEEDED(_cc.read_pointer(vtable_addr, fn_query_interface))) {
-                if (auto hr{ set_breakpoint(cobreakpoint{ clsid, iid, L"QueryInterface", CALLCONV::CC_STDCALL },
-                    fn_query_interface) }; FAILED(hr)) {
-                    _logger.log_error(
-                        std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
+            if (_dbgtype == debuggee_type::live || _dbgtype == debuggee_type::time_travel) {
+                // only when debugging a live process or in a time travel session, we will set breakpoints
+                if (ULONG64 fn_query_interface{}; SUCCEEDED(_cc.read_pointer(vtable_addr, fn_query_interface))) {
+                    if (auto hr{ set_breakpoint(cobreakpoint{ clsid, iid, L"QueryInterface", CALLCONV::CC_STDCALL },
+                        fn_query_interface) }; FAILED(hr)) {
+                        _logger.log_error(
+                            std::format(L"Failed to set a breakpoint on QueryInterface method (CLSID: {:b}, IID: {:b})", clsid, iid), hr);
+                    }
                 }
             }
             _cotype_with_vtables.insert({ { clsid, iid }, vtable_addr });
         }
     }
 
-    // if a given module exports DllGetClassObject we will set a breakpoint on it
-    constexpr std::wstring_view functions_to_monitor[]{
-        L"DllGetClassObject", L"CoRegisterClassObject"
-    };
-    constexpr std::string_view functions_to_monitor_ansi[]{
-        "DllGetClassObject", "CoRegisterClassObject"
-    };
+    if (_dbgtype == debuggee_type::live || _dbgtype == debuggee_type::time_travel) {
+        // only when debugging a live process or in a time travel session, we will set breakpoints
 
-    // those arrays must be always in sync
-    assert(_countof(functions_to_monitor) == _countof(functions_to_monitor_ansi));
+        // if a given module exports DllGetClassObject we will set a breakpoint on it
+        constexpr std::wstring_view functions_to_monitor[]{
+            L"DllGetClassObject", L"CoRegisterClassObject"
+        };
+        constexpr std::string_view functions_to_monitor_ansi[]{
+            "DllGetClassObject", "CoRegisterClassObject"
+        };
 
-    // additional function breakpoints related to COM are enabled only for specific modules
-    int index_limit = (module_name == L"ole32" || module_name == L"combase") ? _countof(functions_to_monitor) : 1;
+        // those arrays must be always in sync
+        assert(_countof(functions_to_monitor) == _countof(functions_to_monitor_ansi));
 
-    for (int i = 0; i < index_limit; i++) {
-        std::wstring fn_name{ functions_to_monitor[i] };
-        std::wstring fn_fullname{ module_name };
-        fn_fullname.append(L"!").append(fn_name);
+        // additional function breakpoints related to COM are enabled only for specific modules
+        int index_limit = (module_name == L"ole32" || module_name == L"combase") ? _countof(functions_to_monitor) : 1;
 
-        // FIXME: I need to use different function if the target is TTD and do nothing if it's dump
-        if (auto fn_addr{ get_exported_function_addr(module_base_addr, functions_to_monitor_ansi[i]) }; std::holds_alternative<ULONG64>(fn_addr)) {
-            if (auto hr{ set_breakpoint(function_breakpoint{ fn_fullname }, std::get<ULONG64>(fn_addr)) }; FAILED(hr)) {
-                _logger.log_error(std::format(L"Failed to set a breakpoint on function '{}'", fn_fullname), hr);
+        for (int i = 0; i < index_limit; i++) {
+            std::wstring fn_name{ functions_to_monitor[i] };
+            std::wstring fn_fullname{ module_name };
+            fn_fullname.append(L"!").append(fn_name);
+
+            if (auto fn_addr{ get_exported_function_addr(module_name, module_base_addr, functions_to_monitor_ansi[i]) }; std::holds_alternative<ULONG64>(fn_addr)) {
+                if (auto hr{ set_breakpoint(function_breakpoint{ fn_fullname }, std::get<ULONG64>(fn_addr)) }; FAILED(hr)) {
+                    _logger.log_error(std::format(L"Failed to set a breakpoint on function '{}'", fn_fullname), hr);
+                }
             }
         }
     }

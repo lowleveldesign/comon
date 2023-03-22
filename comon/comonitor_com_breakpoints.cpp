@@ -37,6 +37,7 @@ namespace views = std::ranges::views;
 namespace fs = std::filesystem;
 
 HRESULT comonitor::set_breakpoint(const breakpoint& brk, ULONG64 address, [[maybe_unused]] PULONG id) {
+    assert(_dbgtype == debuggee_type::live || _dbgtype == debuggee_type::time_travel);
 
     auto get_breakpoint_command = [this, &brk]() {
         if (std::holds_alternative<coquery_single_return_breakpoint>(brk)) {
@@ -83,27 +84,29 @@ HRESULT comonitor::set_breakpoint(const breakpoint& brk, ULONG64 address, [[mayb
 
         std::optional<memory_protect> memprotect{};
 
-        /* I discovered that dbgeng from WinDbgX explicitly calls VirtualProtectEx when setting a breakpoint in read-only memory.
-           The old engine relies on WriteProcessMemory (and its implicit calls to NtProtectVirtualMemory) and fails on a COM pre-stub
-           However, the call to VirtualProtectEx in WinDbgX makes the .NET process thread enter an endless loop, as the call to ComCallPreStub
-           is never replaced by JITer. It must have  something to do with the copy-on-write protection that WindDgbX sets on this memory page.
+        if (_dbgtype == debuggee_type::live) {
+            /* I discovered that dbgeng from WinDbgX explicitly calls VirtualProtectEx when setting a breakpoint in read-only memory.
+               The old engine relies on WriteProcessMemory (and its implicit calls to NtProtectVirtualMemory) and fails on a COM pre-stub
+               However, the call to VirtualProtectEx in WinDbgX makes the .NET process thread enter an endless loop, as the call to ComCallPreStub
+               is never replaced by JITer. It must have  something to do with the copy-on-write protection that WindDgbX sets on this memory page.
 
-           I try to detect such a situation here and set the memory page protection to PAGE_EXECUTE_READWRITE.
-        */
-        if (MEMORY_BASIC_INFORMATION meminfo{}; ::VirtualQueryEx(_process_handle, reinterpret_cast<LPCVOID>(address), &meminfo, sizeof(meminfo)) != 0) {
-            if (meminfo.State == MEM_COMMIT) {
-                if (meminfo.Type != MEM_IMAGE && (meminfo.Protect & PAGE_EXECUTE_READWRITE) == 0) {
-                    memory_protect mp{ .old_protect{}, .new_protect{ PAGE_EXECUTE_READWRITE } };
-                    RETURN_IF_WIN32_BOOL_FALSE(::VirtualProtectEx(_process_handle, meminfo.BaseAddress, 1, mp.new_protect, &mp.old_protect));
-                    _logger.log_info(std::format(L"Changed memory page ({}) protection ({:#x} -> {:#x}) to set a breakpoint.", meminfo.BaseAddress, mp.old_protect, mp.new_protect));
-                    memprotect = mp;
+               I try to detect such a situation here and set the memory page protection to PAGE_EXECUTE_READWRITE.
+            */
+            if (MEMORY_BASIC_INFORMATION meminfo{}; ::VirtualQueryEx(_process_handle, reinterpret_cast<LPCVOID>(address), &meminfo, sizeof(meminfo)) != 0) {
+                if (meminfo.State == MEM_COMMIT) {
+                    if (meminfo.Type != MEM_IMAGE && (meminfo.Protect & PAGE_EXECUTE_READWRITE) == 0) {
+                        memory_protect mp{ .old_protect{}, .new_protect{ PAGE_EXECUTE_READWRITE } };
+                        RETURN_IF_WIN32_BOOL_FALSE(::VirtualProtectEx(_process_handle, meminfo.BaseAddress, 1, mp.new_protect, &mp.old_protect));
+                        _logger.log_info(std::format(L"Changed memory page ({}) protection ({:#x} -> {:#x}) to set a breakpoint.", meminfo.BaseAddress, mp.old_protect, mp.new_protect));
+                        memprotect = mp;
+                    }
+                } else {
+                    _logger.log_warning(std::format(L"Invalid address for a breakpoint (memory is not committed): {:#x}", address));
+                    return E_INVALIDARG;
                 }
             } else {
-                _logger.log_warning(std::format(L"Invalid address for a breakpoint (memory is not committed): {:#x}", address));
-                return E_INVALIDARG;
+                RETURN_LAST_ERROR();
             }
-        } else {
-            RETURN_LAST_ERROR();
         }
 
         RETURN_IF_FAILED(dbgbrk->SetOffset(address));
@@ -198,7 +201,6 @@ HRESULT comonitor::create_cobreakpoint(const CLSID& clsid, const IID& iid, DWORD
         return E_INVALIDARG;
     }
 }
-
 
 bool comonitor::handle_breakpoint(ULONG id) {
     bool handled{};

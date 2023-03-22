@@ -24,6 +24,7 @@ jobs:
     - uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: ${{ matrix.arch }}
+        toolset: 14.35
 
     - run: |
         cmake --preset=ninja-${{ matrix.arch }}-release

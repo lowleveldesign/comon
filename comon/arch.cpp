@@ -221,7 +221,7 @@ HRESULT call_context::read_method_frame(CALLCONV cc, std::vector<arg_val>& args,
 HRESULT call_context::get_arg_value_in_text(const arg_val& arg, std::wstring& text) const {
     auto read_wstring = [this](ULONG64 addr, std::wstring& value, int maxlen = 1000) {
         std::unique_ptr<wchar_t[]> buf(new wchar_t[maxlen]);
-        SIZE_T bytes_read{};
+        ULONG bytes_read{};
         RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(addr, buf.get(), maxlen * sizeof(wchar_t), &bytes_read));
         if (const wchar_t* end = std::char_traits<wchar_t>::find(buf.get(), maxlen, L'\0')) {
             value.assign(buf.get(), end - buf.get());
@@ -233,7 +233,7 @@ HRESULT call_context::get_arg_value_in_text(const arg_val& arg, std::wstring& te
 
     auto read_string = [this](ULONG64 addr, std::string& value, int maxlen = 1000) {
         std::unique_ptr<char[]> buf(new char[maxlen]);
-        SIZE_T bytes_read{};
+        ULONG bytes_read{};
         RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(addr, buf.get(), maxlen * sizeof(char), &bytes_read));
         if (const char* end = std::char_traits<char>::find(buf.get(), maxlen, '\0')) {
             value.assign(buf.get(), end - buf.get());
