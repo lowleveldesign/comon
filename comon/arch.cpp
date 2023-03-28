@@ -183,11 +183,9 @@ HRESULT call_context::read_method_frame(CALLCONV cc, std::vector<arg_val>& args,
     RETURN_IF_FAILED(_dbgdataspaces->ReadPointersVirtual(1, offset, &ret_addr));
     offset += _pointer_size; // return address
 
-    // FIXME: calculate how much space is needed for the arguments
     auto buffer{ std::make_unique<BYTE[]>(args.size() * _pointer_size) };
     RETURN_IF_FAILED(_dbgdataspaces->ReadVirtual(offset, buffer.get(), static_cast<ULONG>(args.size() * _pointer_size), nullptr));
 
-    // FUTURE: only stdcall is currently supported on x86
     auto get_nth_arg_value = [this, &buffer, &x64_reg_values](unsigned int n, arg_val& arg, ULONG64& offset) -> HRESULT {
         if (n < 4 && is_64bit()) {
             if (is_primitive_type(arg.type) || is_pointer_type(arg.type)) {
@@ -200,7 +198,10 @@ HRESULT call_context::read_method_frame(CALLCONV cc, std::vector<arg_val>& args,
                 return E_NOTIMPL;
             }
         } else {
-            // FIXME: what about arguments requiring more space
+            if (!is_primitive_type(arg.type) && !is_pointer_type(arg.type) && !is_float_type(arg.type)) {
+                return E_NOTIMPL;
+            }
+
             if (is_64bit()) {
                 arg.value = *reinterpret_cast<ULONG64*>(buffer.get() + n * _pointer_size);
             } else {
