@@ -35,9 +35,6 @@ namespace fs = std::filesystem;
 
 namespace comon_ext
 {
-
-static const std::unordered_map<int, std::wstring_view> vt_names;
-
 enum class cotype_kind
 {
     Interface,
