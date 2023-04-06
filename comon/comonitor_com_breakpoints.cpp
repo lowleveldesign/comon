@@ -262,7 +262,7 @@ void comonitor::handle_coquery_return(const coquery_single_return_breakpoint& br
 
         register_vtable(brk.clsid, brk.iid, vtbl_addr, true, false);
     } else {
-        log_com_call_error(brk.clsid, {}, brk.create_function_name, static_cast<HRESULT>(function_return_code.value));
+        log_com_call_error(brk.clsid, brk.iid, brk.create_function_name, static_cast<HRESULT>(function_return_code.value));
     }
 }
 
@@ -442,8 +442,8 @@ void comonitor::handle_IUnknown_QueryInterface(const CLSID& clsid) {
     IID iid{};
     RETURN_VOID_IF_FAILED(_cc.read_object(args[1].value, &iid, sizeof iid));
 
+    // if the previous calls were successful, this one should be as well, so no need to wait for the query return
     if (!_cotype_with_vtables.contains({ clsid, iid })) {
-        // we assume here that if previous calls were successful, this one should be as well so no need to wait for the query return
         if (auto hr{ set_breakpoint(coquery_single_return_breakpoint{ clsid, iid, args[2].value, function_name.data() }, return_addr) }; FAILED(hr)) {
             _logger.log_error_dml(std::format(L"Error when setting return breakpoint from {}", function_name), hr);
         }
