@@ -421,20 +421,22 @@ extern "C" HRESULT CALLBACK cobp(IDebugClient * dbgclient, PCSTR args) {
 
     auto vargs{ split_args(args) };
 
-    if (vargs.size() < 3) {
+    int arg_start = 0;
+    cobreakpoint_behavior behavior = cobreakpoint_behavior::stop_before_call;
+    if (vargs.size() > 0) {
+        if (auto bopt{ parse_behavior(vargs[0]) }; bopt) {
+            behavior = *bopt;
+            arg_start++;
+        }
+    }
+
+    if (vargs.size() - arg_start < 3) {
         dbgcontrol->OutputWide(DEBUG_OUTPUT_ERROR, L"ERROR: invalid arguments. Run !cohelp to check the syntax.\n");
         return E_INVALIDARG;
     }
 
     comonitor* monitor{};
     RETURN_IF_FAILED(try_finding_active_monitor(dbgcontrol.get(), &monitor));
-
-    int arg_start = 0;
-    cobreakpoint_behavior behavior = cobreakpoint_behavior::stop_before_call;
-    if (auto bopt{ parse_behavior(vargs[0]) }; bopt) {
-        behavior = *bopt;
-        arg_start++;
-    }
 
     CLSID clsid;
     RETURN_IF_FAILED(try_parse_guid(widen(vargs[arg_start]), clsid));
