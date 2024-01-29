@@ -99,7 +99,7 @@ public:
         return iter;
     }
 
-    auto format(const GUID& g, auto& context) {
+    auto format(const GUID& g, auto& context) const {
         auto gstr{ comon_ext::wstring_from_guid(g) };
 
         if (_output_type == L'n') {
