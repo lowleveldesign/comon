@@ -2,6 +2,19 @@
 
 ![comon](https://github.com/lowleveldesign/comon/workflows/build/badge.svg)
 
+----------------
+
+:information_source: Maintenance note (14.08.2025)
+
+I no longer update this project. This extension works, but it has some issues, such as:
+
+- it traces only the most comon ways of creating COM objects (`DllGetClassObject`, `CoRegisterClassObject`), so it will miss, for example, objects created in out parameters, or objects created using other COM API functions
+- as it relies on breakpoints to collect the COM interactions, it slows down the target application significantly
+
+Therefore, I recommend using comon for debugging relatively small applications or rely on [ETW tracing](https://wtrace.net/guides/com-troubleshooting/#observing-com-interactions-outside-windbg).
+
+----------------
+
 **Table of contents**
 
 <!-- MarkdownTOC -->
